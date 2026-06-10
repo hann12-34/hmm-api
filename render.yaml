@@ -3,12 +3,13 @@ services:
   - type: web
     name: hmm-api
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
-        generateValue: true
+        sync: false
       - key: CORS_ORIGIN
         value: "*"
