@@ -1,0 +1,14 @@
+# Deploy as a NEW Web Service on Render — do NOT link to existing services.
+services:
+  - type: web
+    name: hmm-api
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: "*"
