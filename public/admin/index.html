@@ -12,7 +12,10 @@
   <div id="login-view" class="login-wrap">
     <div class="login-card">
       <h1>HOME MICRO MAINTENANCE</h1>
-      <p>Staff Dashboard</p>
+      <p>Staff Dashboard — Admin · Manager · Worker</p>
+      <p class="empty" style="margin-bottom:16px;font-size:0.82rem">
+        Workers and managers: sign in here. Same jobs sync with the mobile app.
+      </p>
       <form id="login-form">
         <div class="field">
           <label for="email">Email</label>
@@ -37,6 +40,7 @@
       <button class="nav-btn" data-tab="users">Users</button>
       <button class="nav-btn" data-tab="services">Services</button>
       <button class="nav-btn" data-tab="pricing">Pricing</button>
+      <button class="nav-btn" data-tab="audit">Audit Log</button>
     </aside>
     <div class="main">
       <header class="topbar">
@@ -57,6 +61,7 @@
             </label>
           </div>
           <span id="admin-name" style="color:var(--muted);font-size:0.9rem"></span>
+          <button id="account-btn" class="btn btn-ghost" type="button">Account</button>
           <button id="logout-btn" class="btn btn-ghost">Sign Out</button>
         </div>
       </header>
@@ -70,6 +75,35 @@
         <!-- Jobs -->
         <section id="tab-jobs" class="tab-panel hidden">
           <div id="jobs-list-panel">
+            <div class="toolbar" style="margin-bottom:12px">
+              <button id="toggle-create-job" class="btn btn-primary staff-only" type="button" style="width:auto">+ New Job</button>
+            </div>
+            <div id="create-job-panel" class="card hidden staff-only" style="margin-bottom:20px;max-width:720px">
+              <h3>Create Job for Customer</h3>
+              <form id="create-job-form">
+                <div class="field">
+                  <label>Customer</label>
+                  <select id="cj-customer" required></select>
+                </div>
+                <div class="field">
+                  <label>Scheduled Date</label>
+                  <input id="cj-date" type="datetime-local" required>
+                </div>
+                <div class="field">
+                  <label>Services (comma-separated)</label>
+                  <input id="cj-services" placeholder="HVAC Filter, Plumbing Check">
+                </div>
+                <div class="field">
+                  <label>Estimated Price ($)</label>
+                  <input id="cj-price" type="number" min="0" step="1" value="0">
+                </div>
+                <div class="field">
+                  <label>Note</label>
+                  <textarea id="cj-note" rows="2" placeholder="Phone request, special instructions…"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width:auto">Create Job</button>
+              </form>
+            </div>
             <div class="toolbar">
               <select id="job-region-filter">
                 <option value="all">All regions</option>
@@ -184,11 +218,54 @@
           </div>
         </section>
 
+        <!-- Audit Log -->
+        <section id="tab-audit" class="tab-panel hidden">
+          <div class="card">
+            <h3>Activity Log</h3>
+            <p class="empty" style="margin-bottom:12px">Who changed jobs, users, pricing, and services.</p>
+            <table>
+              <thead>
+                <tr><th>When</th><th>Who</th><th>Action</th><th>Summary</th></tr>
+              </thead>
+              <tbody id="audit-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
       </div>
     </div>
   </div>
 
+  <div id="revisit-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Needs Revisit</h3>
+      <p class="empty" style="margin-bottom:12px">Why does this job need a follow-up visit?</p>
+      <div class="field">
+        <textarea id="revisit-reason" rows="3" placeholder="e.g. parts needed, no access, incomplete work…"></textarea>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="revisit-confirm" class="btn btn-primary" style="width:auto">Mark for Revisit</button>
+        <button type="button" id="revisit-cancel" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="account-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Account</h3>
+      <p class="empty" id="account-email" style="margin-bottom:16px"></p>
+      <form id="password-form">
+        <div class="field"><label>Current Password</label><input id="pw-current" type="password" required autocomplete="current-password"></div>
+        <div class="field"><label>New Password</label><input id="pw-new" type="password" required minlength="6" autocomplete="new-password"></div>
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary" style="width:auto">Change Password</button>
+          <button type="button" id="account-close" class="btn btn-ghost">Close</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="/admin/app.js"></script>
+  <script src="/admin/app.js?v=6"></script>
 </body>
 </html>

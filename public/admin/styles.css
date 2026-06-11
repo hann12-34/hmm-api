@@ -354,3 +354,31 @@ tr:hover td { background: #222; }
   cursor: pointer;
 }
 .notif-pref input { width: auto; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: grid;
+  place-items: center;
+  z-index: 500;
+  padding: 24px;
+}
+.modal-card {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+}
+.worker-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.instruction-card {
+  padding: 14px;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+}
+.instruction-card.office { background: rgba(201,168,76,0.12); border-color: var(--gold-dim); }
+.instruction-card.client { background: rgba(59,130,246,0.08); }
+.instruction-card .lbl { font-size: 0.75rem; font-weight: 700; margin-bottom: 6px; }
+.staff-only.hidden { display: none !important; }

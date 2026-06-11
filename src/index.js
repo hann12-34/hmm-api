@@ -5,8 +5,10 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { User, WorkOrder, Payment, ServiceType, AppNotification, orderToJSON } = require('./models');
+const { User, WorkOrder, Payment, ServiceType, AppNotification, AuditLog, orderToJSON } = require('./models');
 const { signToken, authMiddleware, requireRole, isStaffRole } = require('./auth');
+const { canAccessOrder, workerCanAct } = require('./orderAccess');
+const { logAudit, auditToJSON } = require('./auditLog');
 const {
   getPricingConfig,
   updatePricingConfig,
@@ -23,6 +25,24 @@ const {
 
 const PORT = process.env.PORT || 3001;
 const app = express();
+
+/**
+ * Note visibility:
+ * - customerNote → everyone (customer, worker, manager, admin)
+ * - workerNote/workerNotes → worker, manager, admin (NOT customer)
+ * - adminNote (staff note) → manager, admin only (NOT worker, NOT customer)
+ */
+function orderForRole(doc, role) {
+  const o = orderToJSON(doc);
+  if (role === 'customer') {
+    o.adminNote = '';
+    o.workerNote = '';
+    o.workerNotes = [];
+  } else if (role === 'worker') {
+    o.adminNote = '';
+  }
+  return o;
+}
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '15mb' }));
@@ -136,23 +156,14 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
   else if (req.user.role === 'worker') query.assignedWorkerUID = req.user.uid;
   // admin/manager: all orders
   const orders = await WorkOrder.find(query).sort({ scheduledDate: -1 });
-  const mapped = orders.map(orderToJSON);
-  if (req.user.role === 'customer') {
-    mapped.forEach(o => { o.adminNote = ''; o.workerNote = ''; o.workerNotes = []; });
-  }
-  res.json(mapped);
+  res.json(orders.map(o => orderForRole(o, req.user.role)));
 });
 
 app.get('/api/orders/:id', authMiddleware, async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const o = orderToJSON(order);
-  if (req.user.role === 'customer') {
-    o.adminNote = '';
-    o.workerNote = '';
-    o.workerNotes = [];
-  }
-  res.json(o);
+  if (!canAccessOrder(req.user, order)) return res.status(403).json({ error: 'Forbidden' });
+  res.json(orderForRole(order, req.user.role));
 });
 
 // ── Customer: request visit ───────────────────────────────────────
@@ -179,13 +190,29 @@ app.post('/api/orders', authMiddleware, requireRole('customer', 'admin', 'manage
   if (!isAdmin) {
     const customer = await User.findOne({ uid: customerUID });
     onVisitRequested(customer, order).catch(console.error);
+  } else {
+    await logAudit({
+      actor: req.user,
+      action: 'order.create',
+      targetType: 'order',
+      targetId: order._id.toString(),
+      summary: `Created job for ${customer?.name || customerUID}`,
+      details: { customerUID, region: order.region, status: order.status },
+    });
   }
-  res.status(201).json(orderToJSON(order));
+  res.status(201).json(orderForRole(order, req.user.role));
 });
 
 app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!canAccessOrder(req.user, order)) return res.status(403).json({ error: 'Forbidden' });
+
+  const before = {
+    status: order.status,
+    assignedWorkerUID: order.assignedWorkerUID,
+    scheduledDate: order.scheduledDate,
+  };
 
   if (req.user.role === 'customer') {
     if (order.customerUID !== req.user.uid) return res.status(403).json({ error: 'Forbidden' });
@@ -202,8 +229,6 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
     }
     order.status = 'pendingConfirmation';
     order.confirmedAt = null;
-  } else if (req.user.role === 'worker') {
-    return res.status(403).json({ error: 'Use the worker app for field updates' });
   } else if (isStaffRole(req.user.role)) {
     const allowed = [
       'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
@@ -216,15 +241,48 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   await order.save();
-  res.json(orderToJSON(order));
+  if (isStaffRole(req.user.role)) {
+    const changes = [];
+    if (before.status !== order.status) changes.push(`status ${before.status} → ${order.status}`);
+    if (before.assignedWorkerUID !== order.assignedWorkerUID) {
+      changes.push(`worker ${before.assignedWorkerUID || '—'} → ${order.assignedWorkerUID || '—'}`);
+    }
+    if (String(before.scheduledDate) !== String(order.scheduledDate)) changes.push('schedule updated');
+    if (changes.length) {
+      await logAudit({
+        actor: req.user,
+        action: 'order.update',
+        targetType: 'order',
+        targetId: order._id.toString(),
+        summary: changes.join('; '),
+        details: { before, after: { status: order.status, assignedWorkerUID: order.assignedWorkerUID } },
+      });
+    }
+  }
+  res.json(orderForRole(order, req.user.role));
 });
 
 app.post('/api/orders/:id/cancel', authMiddleware, async (req, res) => {
-  const order = await WorkOrder.findByIdAndUpdate(
-    req.params.id, { status: 'cancelled' }, { new: true }
-  );
+  const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  res.json(orderToJSON(order));
+  if (req.user.role === 'customer') {
+    if (order.customerUID !== req.user.uid) return res.status(403).json({ error: 'Forbidden' });
+  } else if (!isStaffRole(req.user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  order.status = 'cancelled';
+  await order.save();
+  if (isStaffRole(req.user.role)) {
+    await logAudit({
+      actor: req.user,
+      action: 'order.cancel',
+      targetType: 'order',
+      targetId: order._id.toString(),
+      summary: `Cancelled job Unit ${order.unitNumber || '—'}`,
+      details: { region: order.region, customerUID: order.customerUID },
+    });
+  }
+  res.json(orderForRole(order, req.user.role));
 });
 
 app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), async (req, res) => {
@@ -266,7 +324,7 @@ app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), as
     }
   }
 
-  const result = orderToJSON(order);
+  const result = orderForRole(order, req.user.role);
   if (redoOrder) result.redoJobId = redoOrder._id.toString();
   res.json(result);
 });
@@ -275,15 +333,27 @@ app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), as
 app.patch('/api/orders/:id/notes', authMiddleware, async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if (req.body.customerNote !== undefined) order.customerNote = req.body.customerNote;
-  if (req.body.workerNote !== undefined) order.workerNote = req.body.workerNote;
+  if (!canAccessOrder(req.user, order)) return res.status(403).json({ error: 'Forbidden' });
+  if (req.body.customerNote !== undefined) {
+    if (req.user.role !== 'customer' && !isStaffRole(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    order.customerNote = req.body.customerNote;
+  }
+  if (req.body.workerNote !== undefined) {
+    if (!workerCanAct(req.user, order) && !isStaffRole(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    order.workerNote = req.body.workerNote;
+  }
   await order.save();
-  res.json(orderToJSON(order));
+  res.json(orderForRole(order, req.user.role));
 });
 
 app.post('/api/orders/:id/worker-notes', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   const entry = {
     id: crypto.randomUUID(),
     text: (req.body.text || '').trim(),
@@ -302,38 +372,58 @@ app.post('/api/orders/:id/worker-notes', authMiddleware, requireRole('worker'), 
   order.workerNotes.push(entry);
   order.workerNote = entry.text;
   await order.save();
-  res.json(orderToJSON(order));
+  res.json(orderForRole(order, req.user.role));
 });
 
 // ── Photos ────────────────────────────────────────────────────────
 app.post('/api/orders/:id/photos/:side', authMiddleware, async (req, res) => {
   const side = req.params.side;
+  if (!['customer', 'worker'].includes(side)) return res.status(400).json({ error: 'Invalid side' });
   const field = side === 'customer' ? 'customerPhotos' : 'workerPhotos';
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (side === 'customer') {
+    if (order.customerUID !== req.user.uid && !isStaffRole(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  } else if (!workerCanAct(req.user, order)) {
+    return res.status(403).json({ error: 'Not assigned to this job' });
+  }
   const url = req.body.url;
   if (!url) return res.status(400).json({ error: 'url required' });
   if (!order[field].includes(url)) order[field].push(url);
   await order.save();
-  res.json(orderToJSON(order));
+  res.json(orderForRole(order, req.user.role));
 });
 
 app.delete('/api/orders/:id/photos/:side', authMiddleware, async (req, res) => {
-  const field = req.params.side === 'customer' ? 'customerPhotos' : 'workerPhotos';
+  const side = req.params.side;
+  if (!['customer', 'worker'].includes(side)) return res.status(400).json({ error: 'Invalid side' });
+  const field = side === 'customer' ? 'customerPhotos' : 'workerPhotos';
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (side === 'customer') {
+    if (order.customerUID !== req.user.uid && !isStaffRole(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  } else if (!workerCanAct(req.user, order)) {
+    return res.status(403).json({ error: 'Not assigned to this job' });
+  }
   order[field] = order[field].filter(u => u !== req.body.url);
   await order.save();
-  res.json(orderToJSON(order));
+  res.json(orderForRole(order, req.user.role));
 });
 
 // ── Checklist ─────────────────────────────────────────────────────
 app.patch('/api/orders/:id/checklist', authMiddleware, async (req, res) => {
-  const order = await WorkOrder.findByIdAndUpdate(
-    req.params.id, { checklistItems: req.body.items }, { new: true }
-  );
+  const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  res.json(orderToJSON(order));
+  if (!workerCanAct(req.user, order) && !isStaffRole(req.user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  order.checklistItems = req.body.items || [];
+  await order.save();
+  res.json(orderForRole(order, req.user.role));
 });
 
 // ── Worker status actions ─────────────────────────────────────────
@@ -342,35 +432,41 @@ async function appendWorkTime(order, event, workerUID, extra = {}) {
   order.workTimeLog.push(entry);
   Object.assign(order, extra);
   await order.save();
-  return orderToJSON(order);
+  return order;
 }
 
 app.post('/api/orders/:id/start', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order || order.status !== 'scheduled') return res.status(400).json({ error: 'Cannot start' });
+  if (order.assignedWorkerUID && order.assignedWorkerUID !== req.user.uid) {
+    return res.status(403).json({ error: 'Assigned to another worker' });
+  }
   order.status = 'inProgress';
   order.startedAt = new Date();
   order.assignedWorkerUID = req.user.uid;
-  res.json(await appendWorkTime(order, 'started', req.user.uid));
+  res.json(orderForRole(await appendWorkTime(order, 'started', req.user.uid), req.user.role));
 });
 
 app.post('/api/orders/:id/pause', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order || order.status !== 'inProgress') return res.status(400).json({ error: 'Cannot pause' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   order.status = 'paused';
-  res.json(await appendWorkTime(order, 'paused', req.user.uid));
+  res.json(orderForRole(await appendWorkTime(order, 'paused', req.user.uid), req.user.role));
 });
 
 app.post('/api/orders/:id/resume', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order || order.status !== 'paused') return res.status(400).json({ error: 'Cannot resume' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   order.status = 'inProgress';
-  res.json(await appendWorkTime(order, 'resumed', req.user.uid));
+  res.json(orderForRole(await appendWorkTime(order, 'resumed', req.user.uid), req.user.role));
 });
 
 app.post('/api/orders/:id/complete', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   order.status = 'completed';
   order.completedAt = new Date();
   const result = await appendWorkTime(order, 'completed', req.user.uid);
@@ -388,12 +484,13 @@ app.post('/api/orders/:id/complete', authMiddleware, requireRole('worker'), asyn
     order.serviceCharged = true;
     await order.save();
   }
-  res.json(result);
+  res.json(orderForRole(result, req.user.role));
 });
 
 app.post('/api/orders/:id/revisit', authMiddleware, requireRole('worker'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   if (order.status === 'inProgress') {
     order.status = 'needsRevisit';
     order.revisitCount += 1;
@@ -403,16 +500,17 @@ app.post('/api/orders/:id/revisit', authMiddleware, requireRole('worker'), async
     order.revisitCount += 1;
     await order.save();
   }
-  res.json(orderToJSON(order));
+  res.json(orderForRole(order, req.user.role));
 });
 
 app.post('/api/orders/:id/schedule-revisit', authMiddleware, requireRole('worker'), async (req, res) => {
-  const order = await WorkOrder.findByIdAndUpdate(req.params.id, {
-    scheduledDate: new Date(req.body.date),
-    status: 'scheduled',
-  }, { new: true });
+  const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  res.json(orderToJSON(order));
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
+  order.scheduledDate = new Date(req.body.date);
+  order.status = 'scheduled';
+  await order.save();
+  res.json(orderForRole(order, req.user.role));
 });
 
 // ── Admin: users ────────────────────────────────────────────────────
@@ -460,16 +558,16 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
 });
 
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
-  const isAdmin = req.user.role === 'admin';
   const user = await User.findOne({ uid: req.params.uid });
   if (!user) return res.status(404).json({ error: 'Not found' });
-  if (['admin', 'manager'].includes(user.role)) {
-    return res.status(403).json({ error: 'Admin and manager accounts cannot be edited here' });
+  if (user.role === 'admin') {
+    return res.status(403).json({ error: 'Admin accounts cannot be edited here' });
+  }
+  if (user.role === 'manager' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can edit manager accounts' });
   }
 
-  const allowed = isAdmin
-    ? ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp', 'role']
-    : ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp'];
+  const allowed = ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp', 'role'];
   const patch = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) {
@@ -478,8 +576,8 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), as
   }
 
   if (patch.role !== undefined) {
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Only admins can change user roles' });
+    if (req.user.role === 'manager' && patch.role === 'manager') {
+      return res.status(403).json({ error: 'Only admins can assign the manager role' });
     }
     if (!['customer', 'worker', 'manager'].includes(patch.role)) {
       return res.status(400).json({ error: 'Role must be customer, worker, or manager' });
@@ -519,23 +617,67 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), as
       { $set: { region: patch.region } }
     );
   }
+  if (patch.role !== undefined && patch.role !== user.role) {
+    await logAudit({
+      actor: req.user,
+      action: 'user.role_change',
+      targetType: 'user',
+      targetId: user.uid,
+      summary: `${user.email}: ${user.role} → ${patch.role}`,
+      details: { email: user.email, from: user.role, to: patch.role },
+    });
+  } else if (Object.keys(patch).length) {
+    await logAudit({
+      actor: req.user,
+      action: 'user.update',
+      targetType: 'user',
+      targetId: user.uid,
+      summary: `Updated ${user.email}`,
+      details: patch,
+    });
+  }
   res.json(updated.toPublic());
 });
 
-app.delete('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
+app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manager', 'worker'), async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Current password and new password (6+ chars) required' });
+  }
+  const user = await User.findOne({ uid: req.user.uid });
+  if (!user || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  await user.save();
+  await logAudit({
+    actor: req.user,
+    action: 'user.password_change',
+    targetType: 'user',
+    targetId: user.uid,
+    summary: `${user.email} changed password`,
+  });
+  res.json({ ok: true });
+});
+
+app.delete('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const target = await User.findOne({ uid: req.params.uid });
   if (!target) return res.status(404).json({ error: 'Not found' });
   if (target.role === 'admin') {
-    const adminCount = await User.countDocuments({ role: 'admin' });
-    if (adminCount <= 1) {
-      return res.status(400).json({ error: 'Cannot delete the last admin account' });
-    }
     return res.status(403).json({ error: 'Admin accounts cannot be deleted' });
   }
-  if (target.role === 'manager') {
-    return res.status(403).json({ error: 'Manager accounts cannot be deleted here' });
+  if (target.role === 'manager' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can delete manager accounts' });
   }
   await User.deleteOne({ uid: req.params.uid });
+  await logAudit({
+    actor: req.user,
+    action: 'user.delete',
+    targetType: 'user',
+    targetId: target.uid,
+    summary: `Deleted ${target.email} (${target.role})`,
+    details: { email: target.email, role: target.role },
+  });
   res.json({ ok: true });
 });
 
@@ -595,8 +737,16 @@ app.get('/api/admin/pricing', authMiddleware, requireRole('admin', 'manager'), a
   });
 });
 
-app.patch('/api/admin/pricing', authMiddleware, requireRole('admin'), async (req, res) => {
+app.patch('/api/admin/pricing', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const updated = await updatePricingConfig(req.body);
+  await logAudit({
+    actor: req.user,
+    action: 'pricing.update',
+    targetType: 'pricing',
+    targetId: 'default',
+    summary: 'Updated new-customer pricing',
+    details: req.body,
+  });
   res.json({
     ...updated,
     message: 'Updated prices apply to NEW signups only. Existing customers keep their locked rates.',
@@ -604,18 +754,42 @@ app.patch('/api/admin/pricing', authMiddleware, requireRole('admin'), async (req
 });
 
 // ── Admin: services CRUD ────────────────────────────────────────────
-app.post('/api/admin/services', authMiddleware, requireRole('admin'), async (req, res) => {
+app.post('/api/admin/services', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const s = await ServiceType.create(req.body);
+  await logAudit({
+    actor: req.user,
+    action: 'service.create',
+    targetType: 'service',
+    targetId: s._id.toString(),
+    summary: `Added service ${s.name}`,
+    details: { name: s.name, price: s.price },
+  });
   res.status(201).json({ id: s._id.toString(), name: s.name, price: s.price, sortOrder: s.sortOrder });
 });
 
-app.patch('/api/admin/services/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+app.patch('/api/admin/services/:id', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const s = await ServiceType.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  await logAudit({
+    actor: req.user,
+    action: 'service.update',
+    targetType: 'service',
+    targetId: req.params.id,
+    summary: `Updated service ${s?.name || req.params.id}`,
+    details: req.body,
+  });
   res.json({ id: s._id.toString(), name: s.name, price: s.price, sortOrder: s.sortOrder });
 });
 
-app.delete('/api/admin/services/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+app.delete('/api/admin/services/:id', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const s = await ServiceType.findById(req.params.id);
   await ServiceType.findByIdAndDelete(req.params.id);
+  await logAudit({
+    actor: req.user,
+    action: 'service.delete',
+    targetType: 'service',
+    targetId: req.params.id,
+    summary: `Deleted service ${s?.name || req.params.id}`,
+  });
   res.json({ ok: true });
 });
 
@@ -629,7 +803,21 @@ app.post('/api/admin/orders/:id/confirm-schedule', authMiddleware, requireRole('
   await order.save();
   const customer = await User.findOne({ uid: order.customerUID });
   onVisitConfirmed(customer, order).catch(console.error);
-  res.json(orderToJSON(order));
+  await logAudit({
+    actor: req.user,
+    action: 'order.confirm_schedule',
+    targetType: 'order',
+    targetId: order._id.toString(),
+    summary: `Confirmed visit Unit ${order.unitNumber || '—'}`,
+    details: { scheduledDate: order.scheduledDate, customerUID: order.customerUID },
+  });
+  res.json(orderForRole(order, req.user.role));
+});
+
+app.get('/api/admin/audit-log', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 200);
+  const items = await AuditLog.find().sort({ createdAt: -1 }).limit(limit);
+  res.json(items.map(auditToJSON));
 });
 
 // ── In-app notifications ─────────────────────────────────────────────
@@ -661,8 +849,18 @@ app.post('/api/notifications/read-all', authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/orders/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+app.delete('/api/orders/:id', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const order = await WorkOrder.findById(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
   await WorkOrder.findByIdAndDelete(req.params.id);
+  await logAudit({
+    actor: req.user,
+    action: 'order.delete',
+    targetType: 'order',
+    targetId: req.params.id,
+    summary: `Deleted job Unit ${order.unitNumber || '—'}`,
+    details: { region: order.region, status: order.status, customerUID: order.customerUID },
+  });
   res.json({ ok: true });
 });
 

@@ -7,7 +7,7 @@ function isAdmin() { return state.user?.role === 'admin'; }
 function isManager() { return state.user?.role === 'manager'; }
 function isStaff() { return STAFF_ROLES.includes(state.user?.role); }
 function isWorkerPortal() { return state.user?.role === 'worker'; }
-function canDelete() { return isAdmin(); }
+function canDelete() { return isStaff(); }
 
 let state = {
   user: null,
@@ -15,6 +15,7 @@ let state = {
   users: [],
   services: [],
   pricing: null,
+  auditLogs: [],
   selectedOrderId: null,
   selectedUserUid: null,
   notifications: [],
@@ -123,8 +124,6 @@ function buildNavUrl(nav) {
 function applyNav(nav, { rerender = true } = {}) {
   if (isWorkerPortal()) {
     nav = { tab: 'jobs', orderId: nav.orderId || null, userUid: null };
-  } else if (isManager() && ['services', 'pricing'].includes(nav.tab)) {
-    nav = { ...nav, tab: 'overview' };
   }
   state.selectedOrderId = nav.orderId || null;
   state.selectedUserUid = nav.userUid || null;
@@ -152,6 +151,7 @@ function applyNav(nav, { rerender = true } = {}) {
   }
 
   if (tab === 'pricing' && rerender) renderPricing();
+  if (tab === 'audit' && rerender) renderAuditLog();
 }
 
 function pushNav(nav) {
@@ -218,13 +218,15 @@ function applyRoleShell() {
     overview: isStaff(),
     jobs: true,
     users: isStaff(),
-    services: isAdmin(),
-    pricing: isAdmin(),
+    services: isStaff(),
+    pricing: isStaff(),
+    audit: isStaff(),
   };
   $$('.nav-btn').forEach(btn => {
     const tab = btn.dataset.tab;
     btn.classList.toggle('hidden', !tabs[tab]);
   });
+  $$('.staff-only').forEach(el => el.classList.toggle('hidden', !isStaff()));
 }
 
 async function login(email, password) {
@@ -290,25 +292,28 @@ async function refreshAll() {
     return;
   }
 
-  const fetches = [
+  const [orders, users, services, pricing, auditLogs] = await Promise.all([
     api('GET', '/orders'),
     api('GET', '/admin/users'),
     api('GET', '/services'),
-  ];
-  if (isAdmin()) fetches.push(api('GET', '/admin/pricing'));
-  const results = await Promise.all(fetches);
-  state.orders = results[0];
-  state.users = results[1];
-  state.services = results[2];
-  state.pricing = isAdmin() ? results[3] : null;
+    api('GET', '/admin/pricing'),
+    api('GET', '/admin/audit-log?limit=100'),
+  ]);
+  state.orders = orders;
+  state.users = users;
+  state.services = services;
+  state.pricing = pricing;
+  state.auditLogs = auditLogs;
 
-  if (isStaff()) renderOverview();
-  renderJobsTable();
-  if (isStaff()) renderUsersTable();
-  if (isAdmin()) {
+  if (isStaff()) {
+    renderOverview();
+    renderUsersTable();
     renderServicesTable();
     renderPricing();
+    renderAuditLog();
+    populateCreateJobCustomers();
   }
+  renderJobsTable();
   if (state.selectedOrderId) renderJobDetail();
   if (state.selectedUserUid) renderUserDetail();
   await refreshNotifications();
@@ -401,13 +406,14 @@ function computeStats() {
   const openJobs = state.orders.filter(o => !['completed', 'cancelled'].includes(o.status));
   const pendingJobs = state.orders.filter(o => o.status === 'pendingConfirmation');
   const workers = state.users.filter(u => u.role === 'worker');
+  const managers = state.users.filter(u => u.role === 'manager');
   const recentJoins = [...customers]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
     .slice(0, 8);
   const recentCancelled = [...cancelled]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
     .slice(0, 8);
-  return { customers, active, cancelled, newMembers, openJobs, pendingJobs, workers, recentJoins, recentCancelled };
+  return { customers, active, cancelled, newMembers, openJobs, pendingJobs, workers, managers, recentJoins, recentCancelled };
 }
 
 function renderOverview() {
@@ -441,6 +447,7 @@ function renderOverview() {
       <div class="stat-card"><div class="num">${s.openJobs.length}</div><div class="lbl">Open Jobs</div></div>
       <div class="stat-card"><div class="num">${s.pendingJobs.length}</div><div class="lbl">Awaiting Confirm</div></div>
       <div class="stat-card"><div class="num">${s.workers.length}</div><div class="lbl">Workers</div></div>
+      <div class="stat-card"><div class="num">${s.managers.length}</div><div class="lbl">Managers</div></div>
     </div>
     <div class="overview-cols">
       <div class="card">
@@ -528,7 +535,186 @@ function openJob(id) {
 
 $('#back-jobs').addEventListener('click', () => history.back());
 
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+async function workerOrderAction(path, orderId) {
+  const updated = await api('POST', path);
+  const idx = state.orders.findIndex(x => x.id === orderId);
+  if (idx >= 0) state.orders[idx] = updated;
+  renderJobDetail();
+  toast('Updated');
+}
+
+async function renderWorkerJobDetail() {
+  const o = state.orders.find(x => x.id === state.selectedOrderId);
+  const el = $('#job-detail');
+  if (!o) { el.innerHTML = '<p class="empty">Job not found.</p>'; return; }
+
+  const st = o.status;
+  const canEditChecklist = st === 'inProgress' || st === 'paused';
+  const allChecked = !(o.checklistItems || []).length || (o.checklistItems || []).every(i => i.isCompleted);
+
+  const checklistHtml = (o.checklistItems || []).map((item, i) => {
+    if (canEditChecklist) {
+      return `<label class="checklist-row" style="cursor:pointer">
+        <input type="checkbox" data-ck-idx="${i}" ${item.isCompleted ? 'checked' : ''}>
+        <span>${esc(item.title)}</span>
+      </label>`;
+    }
+    return `<p>${item.isCompleted ? '☑' : '☐'} ${esc(item.title)}</p>`;
+  }).join('') || '<p class="empty">No tasks assigned yet.</p>';
+
+  const workerNotes = (o.workerNotes || []).map(n => `
+    <div class="note-block">
+      <div class="note-meta">${fmtDate(n.createdAt)}</div>
+      ${esc(n.text)}
+    </div>
+  `).join('') || (o.workerNote ? `<div class="note-block">${esc(o.workerNote)}</div>` : '');
+
+  let actionBtns = '';
+  if (st === 'scheduled') {
+    actionBtns = `<button class="btn btn-primary" id="w-start">Start Job</button>`;
+  } else if (st === 'inProgress') {
+    actionBtns = `
+      <button class="btn btn-ghost" id="w-pause">Pause</button>
+      <button class="btn btn-ghost" id="w-revisit">Needs Revisit</button>
+      <button class="btn btn-primary" id="w-complete" ${allChecked ? '' : 'disabled title="Complete all checklist items first"'}>Complete Job</button>`;
+  } else if (st === 'paused') {
+    actionBtns = `<button class="btn btn-primary" id="w-resume">Resume</button>`;
+  } else if (st === 'needsRevisit') {
+    actionBtns = `
+      <input type="datetime-local" id="w-revisit-date" value="${toLocalInput(o.scheduledDate)}" style="max-width:220px">
+      <button class="btn btn-primary" id="w-schedule-revisit">Schedule Revisit</button>`;
+  }
+
+  el.innerHTML = `
+    <div class="toolbar">${statusBadge(st)}</div>
+    <div class="worker-actions">${actionBtns}</div>
+    <div class="detail-grid">
+      <div>
+        <div class="card">
+          <h3>Unit ${esc(o.unitNumber)} · ${esc(o.region || '—')}</h3>
+          <p><strong>Address:</strong> ${esc(o.address)}</p>
+          <p><strong>Scheduled:</strong> ${fmtDate(o.scheduledDate)}</p>
+          <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
+        </div>
+        <div class="card">
+          <h3>Client Request</h3>
+          <div class="instruction-card client">
+            ${esc(o.customerNote) || '<span class="empty">No client note.</span>'}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Job Tasks</h3>
+          ${checklistHtml}
+        </div>
+        <div class="card">
+          <h3>Your Notes <span class="empty">(visible to worker, manager &amp; admin — not customers)</span></h3>
+          ${workerNotes || '<p class="empty">No notes yet.</p>'}
+          <div class="field" style="margin-top:12px">
+            <textarea id="w-note-input" rows="2" placeholder="Add a field note…"></textarea>
+          </div>
+          <button class="btn btn-ghost" id="w-add-note" style="margin-top:8px">Add Note</button>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Customer Photos</h3>
+          <div class="photos">${(o.customerPhotos||[]).map(photoImg).join('') || '<p class="empty">None</p>'}</div>
+        </div>
+        <div class="card">
+          <h3>Your Photos</h3>
+          <div class="photos" id="w-photos">${(o.workerPhotos||[]).map(photoImg).join('') || '<p class="empty">None</p>'}</div>
+          <input type="file" id="w-photo-input" accept="image/*" capture="environment" style="margin-top:12px">
+        </div>
+        ${o.workTimeLog?.length ? `<div class="card"><h3>Work Time</h3>${o.workTimeLog.map(e =>
+          `<div class="note-meta">${e.event} · ${fmtDate(e.timestamp)}</div>`).join('')}</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  $('#w-start')?.addEventListener('click', async () => {
+    try { await workerOrderAction(`/orders/${o.id}/start`, o.id); } catch (ex) { toast(ex.message); }
+  });
+  $('#w-pause')?.addEventListener('click', async () => {
+    try { await workerOrderAction(`/orders/${o.id}/pause`, o.id); } catch (ex) { toast(ex.message); }
+  });
+  $('#w-resume')?.addEventListener('click', async () => {
+    try { await workerOrderAction(`/orders/${o.id}/resume`, o.id); } catch (ex) { toast(ex.message); }
+  });
+  $('#w-complete')?.addEventListener('click', async () => {
+    if (!confirm('Mark this job complete?')) return;
+    try { await workerOrderAction(`/orders/${o.id}/complete`, o.id); } catch (ex) { toast(ex.message); }
+  });
+  $('#w-revisit')?.addEventListener('click', () => openRevisitModal(o.id));
+  $('#w-schedule-revisit')?.addEventListener('click', async () => {
+    try {
+      const dateVal = $('#w-revisit-date').value;
+      if (!dateVal) { toast('Pick a revisit date'); return; }
+      const updated = await api('POST', `/orders/${o.id}/schedule-revisit`, { date: new Date(dateVal).toISOString() });
+      const idx = state.orders.findIndex(x => x.id === o.id);
+      if (idx >= 0) state.orders[idx] = updated;
+      renderJobDetail();
+      toast('Revisit scheduled');
+    } catch (ex) { toast(ex.message); }
+  });
+
+  el.querySelectorAll('[data-ck-idx]').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const items = (o.checklistItems || []).map((item, i) => ({
+        id: item.id || `item-${i}`,
+        title: item.title,
+        isCompleted: el.querySelector(`[data-ck-idx="${i}"]`)?.checked || false,
+      }));
+      try {
+        const updated = await api('PATCH', `/orders/${o.id}/checklist`, { items });
+        const idx = state.orders.findIndex(x => x.id === o.id);
+        if (idx >= 0) state.orders[idx] = updated;
+        renderJobDetail();
+      } catch (ex) { toast(ex.message); }
+    });
+  });
+
+  $('#w-add-note')?.addEventListener('click', async () => {
+    const text = $('#w-note-input').value.trim();
+    if (!text) { toast('Enter a note'); return; }
+    try {
+      const updated = await api('POST', `/orders/${o.id}/worker-notes`, { text });
+      const idx = state.orders.findIndex(x => x.id === o.id);
+      if (idx >= 0) state.orders[idx] = updated;
+      renderJobDetail();
+      toast('Note added');
+    } catch (ex) { toast(ex.message); }
+  });
+
+  $('#w-photo-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const url = await readFileAsDataURL(file);
+      const updated = await api('POST', `/orders/${o.id}/photos/worker`, { url });
+      const idx = state.orders.findIndex(x => x.id === o.id);
+      if (idx >= 0) state.orders[idx] = updated;
+      renderJobDetail();
+      toast('Photo uploaded');
+    } catch (ex) { toast(ex.message); }
+    e.target.value = '';
+  });
+}
+
 function renderJobDetail() {
+  if (isWorkerPortal()) {
+    renderWorkerJobDetail();
+    return;
+  }
+
   const o = state.orders.find(x => x.id === state.selectedOrderId);
   const el = $('#job-detail');
   if (!o) { el.innerHTML = '<p class="empty">Job not found.</p>'; return; }
@@ -549,8 +735,6 @@ function renderJobDetail() {
   const preferredDates = (o.preferredDates || []).map(d => `<li>${fmtDate(d)}</li>`).join('')
     || (o.scheduledDate ? `<li>${fmtDate(o.scheduledDate)}</li>` : '<li class="empty">None</li>');
   const isPending = o.status === 'pendingConfirmation';
-  const readOnly = isWorkerPortal();
-  const showStaffControls = isStaff();
 
   const workerNotes = (o.workerNotes || []).map(n => `
     <div class="note-block">
@@ -559,14 +743,9 @@ function renderJobDetail() {
     </div>
   `).join('') || (o.workerNote ? `<div class="note-block">${esc(o.workerNote)}</div>` : '<p class="empty">No worker notes.</p>');
 
-  const checklistReadOnly = (o.checklistItems || []).map(item =>
-    `<p>${item.isCompleted ? '☑' : '☐'} ${esc(item.title)}</p>`
-  ).join('') || '<p class="empty">No tasks yet.</p>';
-
   el.innerHTML = `
     <div class="toolbar">
       <span>${statusBadge(o.status)}</span>
-      ${readOnly ? '<span class="empty" style="margin-left:12px">View only — use the worker app to update jobs</span>' : ''}
     </div>
     <div class="detail-grid">
       <div>
@@ -578,14 +757,13 @@ function renderJobDetail() {
           <p><strong>Scheduled:</strong> ${isPending ? '— (not confirmed)' : fmtDate(o.scheduledDate)}</p>
           ${o.confirmedAt ? `<p><strong>Confirmed:</strong> ${fmtDate(o.confirmedAt)}</p>` : ''}
           ${o.redoFromOrderId ? `<p><strong>Redo from job:</strong> ${esc(o.redoFromOrderId)}</p>` : ''}
-          <p><strong>Customer:</strong> ${showStaffControls ? userLink(o.customerUID, userName(o.customerUID)) : esc(userName(o.customerUID))}</p>
+          <p><strong>Customer:</strong> ${userLink(o.customerUID, userName(o.customerUID))}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
           <p><strong>Price:</strong> $${o.estimatedPrice || 0}</p>
           <div class="card" style="margin-top:12px;padding:12px;background:#111">
             <strong>Customer Preferred Dates</strong>
             <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted)">${preferredDates}</ul>
           </div>
-          ${showStaffControls ? `
           ${isPending ? `
           <div class="field" style="margin-top:12px">
             <label>Confirm Visit Date</label>
@@ -608,14 +786,10 @@ function renderJobDetail() {
             <label>Scheduled Date</label>
             <input type="datetime-local" id="f-date" value="${toLocalInput(o.scheduledDate)}">
           </div>
-          ` : `
-          <p><strong>Worker:</strong> ${esc(userName(o.assignedWorkerUID))}</p>
-          `}
         </div>
-        ${showStaffControls ? `
         <div class="card">
-          <h3>Admin Note (private)</h3>
-          <textarea id="f-admin-note" rows="4">${esc(o.adminNote || '')}</textarea>
+          <h3>Staff Note <span class="empty">(admin &amp; manager only — not visible to workers or customers)</span></h3>
+          <textarea id="f-admin-note" rows="4" placeholder="Internal instructions between admin and manager…">${esc(o.adminNote || '')}</textarea>
         </div>
         <div class="card">
           <h3>Checklist</h3>
@@ -631,14 +805,9 @@ function renderJobDetail() {
         </div>
         <div class="actions">
           <button class="btn btn-primary" id="save-job">Save Changes</button>
+          <button class="btn btn-ghost" id="cancel-job">Cancel Visit</button>
           ${canDelete() ? '<button class="btn btn-danger" id="delete-job">Delete Job</button>' : ''}
         </div>
-        ` : `
-        <div class="card">
-          <h3>Checklist</h3>
-          ${checklistReadOnly}
-        </div>
-        `}
       </div>
       <div>
         <div class="card">
@@ -646,7 +815,7 @@ function renderJobDetail() {
           <div class="note-block">${esc(o.customerNote) || '<span class="empty">—</span>'}</div>
         </div>
         <div class="card">
-          <h3>Worker Notes</h3>
+          <h3>Worker Notes <span class="empty">(worker, manager &amp; admin)</span></h3>
           ${workerNotes}
         </div>
         <div class="card">
@@ -663,8 +832,7 @@ function renderJobDetail() {
     </div>
   `;
 
-  if (showStaffControls) {
-    wireChecklistRemoves();
+  wireChecklistRemoves();
 
     const taskPick = $('#task-pick');
     const taskCustom = $('#task-custom');
@@ -711,9 +879,9 @@ function renderJobDetail() {
       });
     }
 
-    $('#save-job')?.addEventListener('click', () => saveJob(o.id));
-    $('#delete-job')?.addEventListener('click', () => deleteJob(o.id));
-  }
+  $('#save-job')?.addEventListener('click', () => saveJob(o.id));
+  $('#cancel-job')?.addEventListener('click', () => cancelJob(o.id));
+  $('#delete-job')?.addEventListener('click', () => deleteJob(o.id));
 
   wireUserLinks(el);
 }
@@ -741,6 +909,15 @@ async function saveJob(id) {
   } catch (ex) { toast(ex.message); }
 }
 
+async function cancelJob(id) {
+  if (!confirm('Cancel this visit? (e.g. customer called to cancel)')) return;
+  try {
+    await api('POST', `/orders/${id}/cancel`);
+    await refreshAll();
+    toast('Visit cancelled');
+  } catch (ex) { toast(ex.message); }
+}
+
 async function deleteJob(id) {
   if (!confirm('Delete this job permanently?')) return;
   try {
@@ -749,6 +926,59 @@ async function deleteJob(id) {
     toast('Job deleted');
     history.back();
   } catch (ex) { toast(ex.message); }
+}
+
+function populateCreateJobCustomers() {
+  const sel = $('#cj-customer');
+  if (!sel) return;
+  const customers = state.users.filter(u => u.role === 'customer');
+  sel.innerHTML = customers.map(c =>
+    `<option value="${c.uid}">${esc(c.name || c.email)} · ${esc(c.region || '—')} · Unit ${esc(c.unitNumber || '—')}</option>`
+  ).join('') || '<option value="">No customers</option>';
+}
+
+$('#toggle-create-job')?.addEventListener('click', () => {
+  $('#create-job-panel').classList.toggle('hidden');
+  populateCreateJobCustomers();
+});
+
+$('#create-job-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const customerUID = $('#cj-customer').value;
+    const dateVal = $('#cj-date').value;
+    if (!customerUID || !dateVal) { toast('Pick customer and date'); return; }
+    const services = $('#cj-services').value.split(',').map(s => s.trim()).filter(Boolean);
+    const customer = state.users.find(u => u.uid === customerUID);
+    await api('POST', '/orders', {
+      customerUID,
+      unitNumber: customer?.unitNumber || '',
+      address: customer?.address || '',
+      region: customer?.region || '',
+      preferredDates: [new Date(dateVal).toISOString()],
+      customerNote: $('#cj-note').value.trim(),
+      requestedServices: services,
+      estimatedPrice: Number($('#cj-price').value) || 0,
+      status: 'scheduled',
+    });
+    $('#create-job-panel').classList.add('hidden');
+    e.target.reset();
+    await refreshAll();
+    toast('Job created');
+  } catch (ex) { toast(ex.message); }
+});
+
+function renderAuditLog() {
+  const tbody = $('#audit-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = (state.auditLogs || []).map(a => `
+    <tr>
+      <td>${fmtDate(a.createdAt)}</td>
+      <td>${esc(a.actorEmail || a.actorUID)} <span class="empty">(${esc(a.actorRole)})</span></td>
+      <td>${esc(a.action)}</td>
+      <td>${esc(a.summary)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty">No activity yet.</td></tr>';
 }
 
 $('#job-filter').addEventListener('change', renderJobsTable);
@@ -865,18 +1095,17 @@ async function renderUserDetail() {
         <p><strong>Role:</strong> ${u.role}</p>
         <p><strong>Joined:</strong> ${fmtDate(u.createdAt)}</p>
         ${profileExtra}
-        ${!['admin', 'manager'].includes(u.role) && isStaff() ? `
+        ${isStaff() && u.role !== 'admin' && u.role !== 'manager' ? `
         <form id="admin-user-form" style="margin-top:16px">
-          ${isAdmin() ? `
           <div class="field">
             <label>Role</label>
             <select id="u-role">
               <option value="customer" ${u.role === 'customer' ? 'selected' : ''}>Customer</option>
               <option value="worker" ${u.role === 'worker' ? 'selected' : ''}>Worker</option>
-              <option value="manager" ${u.role === 'manager' ? 'selected' : ''}>Manager</option>
+              ${isAdmin() ? `<option value="manager" ${u.role === 'manager' ? 'selected' : ''}>Manager</option>` : ''}
             </select>
+            ${isManager() ? '<p class="empty">Managers can promote up to Worker only.</p>' : ''}
           </div>
-          ` : `<p><strong>Role:</strong> ${esc(u.role)} <span class="empty">(only admins can change roles)</span></p>`}
           <div id="customer-only-fields" class="${u.role === 'customer' ? '' : 'hidden'}">
             <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
             <div class="field"><label>Address</label><input id="u-address" value="${esc(u.address || '')}"></div>
@@ -889,7 +1118,22 @@ async function renderUserDetail() {
           </div>
           <button type="submit" class="btn btn-primary">Save User</button>
         </form>
-        ${isAdmin() ? '<p class="empty" style="margin-top:8px">App signups are always customers. Promote to Worker or Manager here.</p>' : ''}
+        <p class="empty" style="margin-top:8px">App signups are always customers. Promote to Worker or Manager here.</p>
+        <button type="button" class="btn btn-danger" id="delete-user" style="margin-top:12px">Delete User</button>
+        ` : isStaff() && u.role === 'manager' && isAdmin() ? `
+        <form id="admin-user-form" style="margin-top:16px">
+          <div class="field">
+            <label>Role</label>
+            <select id="u-role">
+              <option value="manager" selected>Manager</option>
+              <option value="worker">Worker</option>
+              <option value="customer">Customer</option>
+            </select>
+          </div>
+          <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
+          <button type="submit" class="btn btn-primary">Save Manager</button>
+        </form>
+        <button type="button" class="btn btn-danger" id="delete-user" style="margin-top:12px">Delete Manager</button>
         ` : ''}
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -931,7 +1175,7 @@ async function renderUserDetail() {
           const msg = newRole === 'worker'
             ? 'Change to Worker? They will get worker app access and lose active customer subscription.'
             : newRole === 'manager'
-              ? 'Change to Manager? They will get web dashboard access (no delete permissions) and lose customer subscription.'
+              ? 'Change to Manager? They will get full staff dashboard access and lose customer subscription.'
               : 'Change to Customer? They will get customer app access and subscription billing.';
           if (!confirm(msg)) return;
         }
@@ -954,6 +1198,15 @@ async function renderUserDetail() {
         } catch (ex) { toast(ex.message); }
       });
     }
+    el.querySelector('#delete-user')?.addEventListener('click', async () => {
+      if (!confirm(`Delete ${u.email} permanently?`)) return;
+      try {
+        await api('DELETE', `/users/${uid}`);
+        await refreshAll();
+        toast('User deleted');
+        history.back();
+      } catch (ex) { toast(ex.message); }
+    });
   } catch (ex) {
     el.innerHTML = `<p class="empty">${esc(ex.message)}</p>`;
   }
@@ -1049,6 +1302,78 @@ function toLocalInput(iso) {
   const pad = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+// ── Worker: Needs Revisit (reason + auto note, matches iOS app) ───────
+
+let pendingRevisitOrderId = null;
+
+function openRevisitModal(orderId) {
+  pendingRevisitOrderId = orderId;
+  $('#revisit-reason').value = '';
+  $('#revisit-modal').classList.remove('hidden');
+  $('#revisit-reason').focus();
+}
+
+async function confirmRevisit() {
+  const orderId = pendingRevisitOrderId;
+  const reason = ($('#revisit-reason').value || '').trim();
+  if (!orderId) return;
+  if (!reason) { toast('Enter a reason for the revisit'); return; }
+  try {
+    await api('POST', `/orders/${orderId}/revisit`);
+    const updated = await api('POST', `/orders/${orderId}/worker-notes`, {
+      text: `Needs revisit: ${reason}`,
+    });
+    const idx = state.orders.findIndex(x => x.id === orderId);
+    if (idx >= 0) state.orders[idx] = updated;
+    $('#revisit-modal').classList.add('hidden');
+    pendingRevisitOrderId = null;
+    renderJobDetail();
+    toast('Marked for revisit');
+  } catch (ex) { toast(ex.message); }
+}
+
+$('#revisit-confirm')?.addEventListener('click', confirmRevisit);
+$('#revisit-cancel')?.addEventListener('click', () => {
+  $('#revisit-modal').classList.add('hidden');
+  pendingRevisitOrderId = null;
+});
+$('#revisit-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'revisit-modal') {
+    $('#revisit-modal').classList.add('hidden');
+    pendingRevisitOrderId = null;
+  }
+});
+
+// ── Account / Password ──────────────────────────────────────────────
+
+$('#account-btn')?.addEventListener('click', () => {
+  $('#account-email').textContent = state.user
+    ? `${state.user.name || state.user.email} (${state.user.role})`
+    : '';
+  $('#password-form').reset();
+  $('#account-modal').classList.remove('hidden');
+});
+
+$('#account-close')?.addEventListener('click', () => {
+  $('#account-modal').classList.add('hidden');
+});
+
+$('#account-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'account-modal') $('#account-modal').classList.add('hidden');
+});
+
+$('#password-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('PATCH', '/users/me/password', {
+      currentPassword: $('#pw-current').value,
+      newPassword: $('#pw-new').value,
+    });
+    $('#account-modal').classList.add('hidden');
+    toast('Password updated');
+  } catch (ex) { toast(ex.message); }
+});
 
 // ── Boot ────────────────────────────────────────────────────────────
 

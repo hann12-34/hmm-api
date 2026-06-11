@@ -101,6 +101,17 @@ const appNotificationSchema = new mongoose.Schema({
   read: { type: Boolean, default: false },
 }, { timestamps: true });
 
+const auditLogSchema = new mongoose.Schema({
+  actorUID: String,
+  actorEmail: String,
+  actorRole: String,
+  action: String,
+  targetType: String,
+  targetId: String,
+  summary: String,
+  details: mongoose.Schema.Types.Mixed,
+}, { timestamps: true });
+
 const pricingConfigSchema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'default' },
   signupFee: { type: Number, default: 99 },
@@ -135,5 +146,6 @@ module.exports = {
   ServiceType: mongoose.model('ServiceType', serviceTypeSchema),
   PricingConfig: mongoose.model('PricingConfig', pricingConfigSchema),
   AppNotification: mongoose.model('AppNotification', appNotificationSchema),
+  AuditLog: mongoose.model('AuditLog', auditLogSchema),
   orderToJSON,
 };
