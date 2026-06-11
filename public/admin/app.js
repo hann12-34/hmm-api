@@ -79,13 +79,11 @@ function userName(uid) {
   return u ? (u.name || u.email) : '—';
 }
 
-/** List/link label when a property has no unit number (single-family homes, etc.). */
+/** Jobs list / activity label: unit if set, otherwise region. */
 function jobDisplayLabel(o) {
   if (!o) return 'View job';
   const unit = (o.unitNumber || '').trim();
   if (unit) return `Unit ${unit}`;
-  const addr = (o.address || '').trim();
-  if (addr) return addr.length > 32 ? `${addr.slice(0, 32)}…` : addr;
   const region = (o.region || '').trim();
   if (region) return region;
   if (o.customerUID) {
@@ -94,6 +92,14 @@ function jobDisplayLabel(o) {
     if (c?.email) return c.email;
   }
   return 'View job';
+}
+
+function jobDetailTitle(o) {
+  const unit = (o?.unitNumber || '').trim();
+  const region = (o?.region || '').trim();
+  if (unit && region) return `Unit ${unit} · ${region}`;
+  if (unit) return `Unit ${unit}`;
+  return region || jobDisplayLabel(o);
 }
 
 function userLink(uid, label) {
@@ -763,7 +769,7 @@ async function renderWorkerJobDetail() {
     <div class="detail-grid">
       <div>
         <div class="card">
-          <h3>${esc(jobDisplayLabel(o))} · ${esc(o.region || '—')}</h3>
+          <h3>${esc(jobDetailTitle(o))}</h3>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
           <p><strong>Scheduled:</strong> ${fmtDate(o.scheduledDate)}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
@@ -1130,8 +1136,8 @@ function populateCreateJobCustomers() {
   sel.innerHTML = customers.map(c => {
     const place = (c.unitNumber || '').trim()
       ? `Unit ${c.unitNumber}`
-      : ((c.address || '').trim() || 'No unit');
-    return `<option value="${c.uid}">${esc(c.name || c.email)} · ${esc(c.region || '—')} · ${esc(place)}</option>`;
+      : (c.region || '—');
+    return `<option value="${c.uid}">${esc(c.name || c.email)} · ${esc(place)}</option>`;
   }).join('') || '<option value="">No customers</option>';
 }
 
