@@ -62,6 +62,7 @@ async function logOrderAudit(actor, order, action, summary, details = {}) {
     details: {
       status: order.status,
       unitNumber: order.unitNumber,
+      address: order.address,
       region: order.region,
       customerUID: order.customerUID,
       ...details,

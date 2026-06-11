@@ -79,6 +79,23 @@ function userName(uid) {
   return u ? (u.name || u.email) : '—';
 }
 
+/** List/link label when a property has no unit number (single-family homes, etc.). */
+function jobDisplayLabel(o) {
+  if (!o) return 'View job';
+  const unit = (o.unitNumber || '').trim();
+  if (unit) return `Unit ${unit}`;
+  const addr = (o.address || '').trim();
+  if (addr) return addr.length > 32 ? `${addr.slice(0, 32)}…` : addr;
+  const region = (o.region || '').trim();
+  if (region) return region;
+  if (o.customerUID) {
+    const c = state.users.find(u => u.uid === o.customerUID);
+    if (c?.name) return c.name;
+    if (c?.email) return c.email;
+  }
+  return 'View job';
+}
+
 function userLink(uid, label) {
   if (!uid) return esc(label || '—');
   const u = state.users.find(x => x.uid === uid);
@@ -506,7 +523,12 @@ function jobActivityRows() {
   }
   return logs.map(a => {
     const order = state.orders.find(o => o.id === a.targetId);
-    const unit = order?.unitNumber ? `Unit ${order.unitNumber}` : (a.details?.unitNumber ? `Unit ${a.details.unitNumber}` : 'View job');
+    const jobLabel = jobDisplayLabel(order || {
+      unitNumber: a.details?.unitNumber,
+      address: a.details?.address,
+      region: a.details?.region,
+      customerUID: a.details?.customerUID,
+    });
     const status = order?.status || a.details?.status || '';
     const who = a.actorEmail || a.actorRole || '—';
     return `
@@ -516,7 +538,7 @@ function jobActivityRows() {
         <td><span class="activity-label">${esc(jobAuditLabel(a.action))}</span></td>
         <td>${status ? statusBadge(status) : '—'}</td>
         <td>${esc(formatAuditSummary(a))}</td>
-        <td>${a.targetId ? `<button type="button" class="link-btn" data-activity-job="${a.targetId}">${esc(unit)}</button>` : '—'}</td>
+        <td>${a.targetId ? `<button type="button" class="link-btn" data-activity-job="${a.targetId}">${esc(jobLabel)}</button>` : '—'}</td>
       </tr>
     `;
   }).join('');
@@ -633,7 +655,7 @@ function renderJobsTable() {
     return `
     <tr class="${rowClass}">
       <td><strong>${esc(o.region || '—')}</strong></td>
-      <td>${unread ? '<span class="unread-pill" title="Not opened yet">New</span> ' : ''}${workerReq ? '<span class="request-pill" title="Worker cannot attend">!</span> ' : ''}<button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
+      <td>${unread ? '<span class="unread-pill" title="Not opened yet">New</span> ' : ''}${workerReq ? '<span class="request-pill" title="Worker cannot attend">!</span> ' : ''}<button class="link-btn" data-id="${o.id}">${esc(jobDisplayLabel(o))}</button></td>
       <td>${o.status === 'pendingConfirmation' ? 'Awaiting confirm' : fmtDate(o.scheduledDate)}</td>
       <td>${statusBadge(o.status)}</td>
       <td>${userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID))}</td>
@@ -741,7 +763,7 @@ async function renderWorkerJobDetail() {
     <div class="detail-grid">
       <div>
         <div class="card">
-          <h3>Unit ${esc(o.unitNumber)} · ${esc(o.region || '—')}</h3>
+          <h3>${esc(jobDisplayLabel(o))} · ${esc(o.region || '—')}</h3>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
           <p><strong>Scheduled:</strong> ${fmtDate(o.scheduledDate)}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
@@ -909,7 +931,7 @@ function renderJobDetail() {
         <div class="card">
           <h3>Job Info</h3>
           <p><strong>Region:</strong> ${esc(o.region || '—')}</p>
-          <p><strong>Unit:</strong> ${esc(o.unitNumber)}</p>
+          <p><strong>Unit:</strong> ${esc(o.unitNumber?.trim() || '— (single-family / no unit)')}</p>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
           <p><strong>Scheduled:</strong> ${isPending ? '— (not confirmed)' : fmtDate(o.scheduledDate)}</p>
           ${o.confirmedAt ? `<p><strong>Confirmed:</strong> ${fmtDate(o.confirmedAt)}</p>` : ''}
@@ -1105,9 +1127,12 @@ function populateCreateJobCustomers() {
   const sel = $('#cj-customer');
   if (!sel) return;
   const customers = state.users.filter(u => u.role === 'customer');
-  sel.innerHTML = customers.map(c =>
-    `<option value="${c.uid}">${esc(c.name || c.email)} · ${esc(c.region || '—')} · Unit ${esc(c.unitNumber || '—')}</option>`
-  ).join('') || '<option value="">No customers</option>';
+  sel.innerHTML = customers.map(c => {
+    const place = (c.unitNumber || '').trim()
+      ? `Unit ${c.unitNumber}`
+      : ((c.address || '').trim() || 'No unit');
+    return `<option value="${c.uid}">${esc(c.name || c.email)} · ${esc(c.region || '—')} · ${esc(place)}</option>`;
+  }).join('') || '<option value="">No customers</option>';
 }
 
 $('#toggle-create-job')?.addEventListener('click', () => {
@@ -1236,7 +1261,7 @@ async function renderUserDetail() {
     const orderRows = orders.map(o => `
       <tr>
         <td>${esc(o.region || '—')}</td>
-        <td><button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
+        <td><button class="link-btn" data-id="${o.id}">${esc(jobDisplayLabel(o))}</button></td>
         <td>${fmtDate(o.scheduledDate)}</td>
         <td>${statusBadge(o.status)}</td>
         <td>${(o.requestedServices || []).join(', ') || '—'}</td>
