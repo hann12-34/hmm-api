@@ -32,13 +32,15 @@
   <div id="app-view" class="shell hidden">
     <aside class="sidebar">
       <div class="brand">HMM ADMIN</div>
-      <button class="nav-btn active" data-tab="jobs">Jobs</button>
+      <div id="sidebar-stats" class="sidebar-stats"></div>
+      <button class="nav-btn active" data-tab="overview">Overview</button>
+      <button class="nav-btn" data-tab="jobs">Jobs</button>
       <button class="nav-btn" data-tab="users">Users</button>
       <button class="nav-btn" data-tab="services">Services</button>
     </aside>
     <div class="main">
       <header class="topbar">
-        <h2 id="page-title">Jobs</h2>
+        <h2 id="page-title">Overview</h2>
         <div>
           <span id="admin-name" style="color:var(--muted);margin-right:12px;font-size:0.9rem"></span>
           <button id="logout-btn" class="btn btn-ghost">Sign Out</button>
@@ -46,8 +48,13 @@
       </header>
       <div class="content">
 
+        <!-- Overview -->
+        <section id="tab-overview" class="tab-panel">
+          <div id="overview-content"></div>
+        </section>
+
         <!-- Jobs -->
-        <section id="tab-jobs" class="tab-panel">
+        <section id="tab-jobs" class="tab-panel hidden">
           <div id="jobs-list-panel">
             <div class="toolbar">
               <select id="job-filter">
@@ -93,7 +100,7 @@
           </div>
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Subscription</th></tr>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Plan</th><th>Status</th><th>Joined</th></tr>
             </thead>
             <tbody id="users-tbody"></tbody>
           </table>

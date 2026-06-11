@@ -149,10 +149,93 @@ async function refreshAll() {
   state.orders = orders;
   state.users = users;
   state.services = services;
+  renderSidebarStats();
+  renderOverview();
   renderJobsTable();
   renderUsersTable();
   renderServicesTable();
   if (state.selectedOrderId) renderJobDetail();
+}
+
+// ── Overview / Stats ────────────────────────────────────────────────
+
+function computeStats() {
+  const customers = state.users.filter(u => u.role === 'customer');
+  const now = Date.now();
+  const monthAgo = now - 30 * 86400000;
+  const active = customers.filter(u => u.subscriptionStatus === 'active');
+  const cancelled = customers.filter(u => u.subscriptionStatus === 'cancelled');
+  const newMembers = customers.filter(u => u.createdAt && new Date(u.createdAt).getTime() >= monthAgo);
+  const openJobs = state.orders.filter(o => !['completed', 'cancelled'].includes(o.status));
+  const workers = state.users.filter(u => u.role === 'worker');
+  const recentJoins = [...customers]
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .slice(0, 8);
+  const recentCancelled = [...cancelled]
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .slice(0, 8);
+  return { customers, active, cancelled, newMembers, openJobs, workers, recentJoins, recentCancelled };
+}
+
+function renderSidebarStats() {
+  const s = computeStats();
+  $('#sidebar-stats').innerHTML = `
+    <div class="stat-line ok"><span>Active subs</span><strong>${s.active.length}</strong></div>
+    <div class="stat-line bad"><span>Cancelled</span><strong>${s.cancelled.length}</strong></div>
+    <div class="stat-line warn"><span>New (30d)</span><strong>${s.newMembers.length}</strong></div>
+    <div class="stat-line"><span>Open jobs</span><strong>${s.openJobs.length}</strong></div>
+    <div class="stat-line"><span>Workers</span><strong>${s.workers.length}</strong></div>
+  `;
+}
+
+function renderOverview() {
+  const s = computeStats();
+  const joinRows = s.recentJoins.map(u => `
+    <tr>
+      <td>${esc(u.name || '—')}</td>
+      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
+      <td class="sub-active">active</td>
+      <td>${fmtDate(u.createdAt)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="empty">No recent signups.</td></tr>';
+
+  const cancelRows = s.recentCancelled.map(u => `
+    <tr>
+      <td>${esc(u.name || '—')}</td>
+      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
+      <td class="sub-cancelled">cancelled</td>
+      <td>${fmtDate(u.createdAt)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="empty">No cancellations yet.</td></tr>';
+
+  $('#overview-content').innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-card"><div class="num">${s.customers.length}</div><div class="lbl">Total Customers</div></div>
+      <div class="stat-card"><div class="num">${s.active.length}</div><div class="lbl">Active Subscriptions</div></div>
+      <div class="stat-card"><div class="num">${s.cancelled.length}</div><div class="lbl">Cancelled</div></div>
+      <div class="stat-card"><div class="num">${s.newMembers.length}</div><div class="lbl">New (Last 30 Days)</div></div>
+      <div class="stat-card"><div class="num">${s.openJobs.length}</div><div class="lbl">Open Jobs</div></div>
+      <div class="stat-card"><div class="num">${s.workers.length}</div><div class="lbl">Workers</div></div>
+    </div>
+    <div class="overview-cols">
+      <div class="card">
+        <h3>Recent Signups</h3>
+        <table>
+          <thead><tr><th>Name</th><th>Unit</th><th>Plan</th><th>Status</th><th>Joined</th></tr></thead>
+          <tbody>${joinRows}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Cancelled Subscriptions</h3>
+        <table>
+          <thead><tr><th>Name</th><th>Unit</th><th>Plan</th><th>Status</th><th>Since</th></tr></thead>
+          <tbody>${cancelRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────
@@ -229,7 +312,6 @@ function renderJobDetail() {
 
   el.innerHTML = `
     <div class="toolbar">
-      <button class="btn btn-ghost" id="back-jobs-inline">← All Jobs</button>
       <span>${statusBadge(o.status)}</span>
     </div>
     <div class="detail-grid">
@@ -302,7 +384,6 @@ function renderJobDetail() {
     </div>
   `;
 
-  $('#back-jobs-inline').addEventListener('click', () => $('#back-jobs').click());
   wireChecklistRemoves();
 
   const taskPick = $('#task-pick');
@@ -382,15 +463,23 @@ function renderUsersTable() {
   let rows = state.users;
   if (role !== 'all') rows = rows.filter(u => u.role === role);
   const tbody = $('#users-tbody');
-  tbody.innerHTML = rows.map(u => `
+  tbody.innerHTML = rows.map(u => {
+    const subClass = u.subscriptionStatus === 'cancelled' ? 'sub-cancelled'
+      : u.subscriptionStatus === 'active' ? 'sub-active' : '';
+    const plan = u.role === 'customer'
+      ? (u.subscriptionPlan === 'annual' ? 'Annual ($990)' : 'Monthly ($99)')
+      : '—';
+    return `
     <tr>
       <td>${esc(u.name || '—')}</td>
       <td>${esc(u.email)}</td>
       <td>${u.role}</td>
       <td>${esc(u.unitNumber || '—')}</td>
-      <td>${u.subscriptionStatus || '—'}</td>
-    </tr>
-  `).join('') || '<tr><td colspan="5" class="empty">No users.</td></tr>';
+      <td>${plan}</td>
+      <td class="${subClass}">${u.subscriptionStatus || '—'}</td>
+      <td>${fmtDate(u.createdAt)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="empty">No users.</td></tr>';
 }
 
 $('#user-filter').addEventListener('change', renderUsersTable);
