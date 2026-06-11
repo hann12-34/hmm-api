@@ -6,7 +6,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { User, WorkOrder, Payment, ServiceType, AppNotification, orderToJSON } = require('./models');
-const { signToken, authMiddleware, requireRole } = require('./auth');
+const { signToken, authMiddleware, requireRole, isStaffRole } = require('./auth');
 const {
   getPricingConfig,
   updatePricingConfig,
@@ -123,7 +123,7 @@ app.get('/api/services', authMiddleware, async (_, res) => {
 
 // ── Payments ──────────────────────────────────────────────────────
 app.get('/api/payments', authMiddleware, async (req, res) => {
-  const uid = req.user.role === 'admin' ? req.query.customerUID : req.user.uid;
+  const uid = isStaffRole(req.user.role) ? req.query.customerUID : req.user.uid;
   if (!uid) return res.status(400).json({ error: 'customerUID required' });
   const items = await Payment.find({ customerUID: uid }).sort({ date: -1 });
   res.json(items.map(p => ({ id: p._id.toString(), ...p.toObject(), _id: undefined, __v: undefined })));
@@ -134,7 +134,7 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
   let query = {};
   if (req.user.role === 'customer') query.customerUID = req.user.uid;
   else if (req.user.role === 'worker') query.assignedWorkerUID = req.user.uid;
-  // admin: all orders
+  // admin/manager: all orders
   const orders = await WorkOrder.find(query).sort({ scheduledDate: -1 });
   const mapped = orders.map(orderToJSON);
   if (req.user.role === 'customer') {
@@ -156,12 +156,12 @@ app.get('/api/orders/:id', authMiddleware, async (req, res) => {
 });
 
 // ── Customer: request visit ───────────────────────────────────────
-app.post('/api/orders', authMiddleware, requireRole('customer', 'admin'), async (req, res) => {
+app.post('/api/orders', authMiddleware, requireRole('customer', 'admin', 'manager'), async (req, res) => {
   const body = req.body;
-  const customerUID = req.user.role === 'admin' ? body.customerUID : req.user.uid;
+  const customerUID = isStaffRole(req.user.role) ? body.customerUID : req.user.uid;
   const customer = await User.findOne({ uid: customerUID });
   const slots = body.preferredDates?.length ? body.preferredDates.map(d => new Date(d)) : [new Date()];
-  const isAdmin = req.user.role === 'admin';
+  const isAdmin = isStaffRole(req.user.role);
   const order = await WorkOrder.create({
     customerUID,
     unitNumber: body.unitNumber || customer?.unitNumber || '',
@@ -202,14 +202,18 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
     }
     order.status = 'pendingConfirmation';
     order.confirmedAt = null;
-  } else {
+  } else if (req.user.role === 'worker') {
+    return res.status(403).json({ error: 'Use the worker app for field updates' });
+  } else if (isStaffRole(req.user.role)) {
     const allowed = [
-    'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
-    'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status', 'region',
+      'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
+      'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status', 'region',
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) order[key] = req.body[key];
     }
+  } else {
+    return res.status(403).json({ error: 'Forbidden' });
   }
   await order.save();
   res.json(orderToJSON(order));
@@ -412,12 +416,12 @@ app.post('/api/orders/:id/schedule-revisit', authMiddleware, requireRole('worker
 });
 
 // ── Admin: users ────────────────────────────────────────────────────
-app.get('/api/admin/users', authMiddleware, requireRole('admin'), async (_, res) => {
+app.get('/api/admin/users', authMiddleware, requireRole('admin', 'manager'), async (_, res) => {
   const users = await User.find();
   res.json(users.map(u => u.toPublic()));
 });
 
-app.get('/api/admin/users/:uid/history', authMiddleware, requireRole('admin'), async (req, res) => {
+app.get('/api/admin/users/:uid/history', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const user = await User.findOne({ uid: req.params.uid });
   if (!user) return res.status(404).json({ error: 'Not found' });
 
@@ -455,14 +459,17 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
   res.json(user.toPublic());
 });
 
-app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
+app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
   const user = await User.findOne({ uid: req.params.uid });
   if (!user) return res.status(404).json({ error: 'Not found' });
-  if (user.role === 'admin') {
-    return res.status(400).json({ error: 'Admin accounts cannot be edited here' });
+  if (['admin', 'manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Admin and manager accounts cannot be edited here' });
   }
 
-  const allowed = ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp', 'role'];
+  const allowed = isAdmin
+    ? ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp', 'role']
+    : ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp'];
   const patch = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) {
@@ -471,18 +478,22 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, r
   }
 
   if (patch.role !== undefined) {
-    if (!['customer', 'worker'].includes(patch.role)) {
-      return res.status(400).json({ error: 'Role must be customer or worker' });
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Only admins can change user roles' });
+    }
+    if (!['customer', 'worker', 'manager'].includes(patch.role)) {
+      return res.status(400).json({ error: 'Role must be customer, worker, or manager' });
     }
     if (patch.role !== user.role) {
-      if (patch.role === 'worker') {
+      const leavingCustomer = user.role === 'customer' && patch.role !== 'customer';
+      if (leavingCustomer) {
         patch.subscriptionStatus = 'cancelled';
         patch.renewalDate = null;
         await WorkOrder.updateMany(
           { customerUID: user.uid, status: { $in: ['pendingConfirmation', 'scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
           { status: 'cancelled' }
         );
-      } else {
+      } else if (patch.role === 'customer') {
         const pricing = await getPricingConfig();
         const locked = lockedPricesFromConfig(pricing);
         if (user.lockedMonthlyPrice == null) {
@@ -512,6 +523,18 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, r
 });
 
 app.delete('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
+  const target = await User.findOne({ uid: req.params.uid });
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  if (target.role === 'admin') {
+    const adminCount = await User.countDocuments({ role: 'admin' });
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: 'Cannot delete the last admin account' });
+    }
+    return res.status(403).json({ error: 'Admin accounts cannot be deleted' });
+  }
+  if (target.role === 'manager') {
+    return res.status(403).json({ error: 'Manager accounts cannot be deleted here' });
+  }
   await User.deleteOne({ uid: req.params.uid });
   res.json({ ok: true });
 });
@@ -560,7 +583,7 @@ app.post('/api/users/me/cancel-subscription', authMiddleware, requireRole('custo
 });
 
 // ── Admin: pricing (new signups only; existing keep locked rates) ───
-app.get('/api/admin/pricing', authMiddleware, requireRole('admin'), async (_, res) => {
+app.get('/api/admin/pricing', authMiddleware, requireRole('admin', 'manager'), async (_, res) => {
   const config = await getPricingConfig();
   const customers = await User.find({ role: 'customer' });
   res.json({
@@ -596,7 +619,7 @@ app.delete('/api/admin/services/:id', authMiddleware, requireRole('admin'), asyn
   res.json({ ok: true });
 });
 
-app.post('/api/admin/orders/:id/confirm-schedule', authMiddleware, requireRole('admin'), async (req, res) => {
+app.post('/api/admin/orders/:id/confirm-schedule', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   const date = req.body.scheduledDate ? new Date(req.body.scheduledDate) : order.scheduledDate;

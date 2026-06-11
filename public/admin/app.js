@@ -1,5 +1,13 @@
 const API = '/api';
 const TOKEN_KEY = 'hmm_admin_token';
+const DASHBOARD_ROLES = ['admin', 'manager', 'worker'];
+const STAFF_ROLES = ['admin', 'manager'];
+
+function isAdmin() { return state.user?.role === 'admin'; }
+function isManager() { return state.user?.role === 'manager'; }
+function isStaff() { return STAFF_ROLES.includes(state.user?.role); }
+function isWorkerPortal() { return state.user?.role === 'worker'; }
+function canDelete() { return isAdmin(); }
 
 let state = {
   user: null,
@@ -75,7 +83,7 @@ function userName(uid) {
 function userLink(uid, label) {
   if (!uid) return esc(label || '—');
   const u = state.users.find(x => x.uid === uid);
-  if (!u || u.role === 'admin') return esc(label || u?.name || '—');
+  if (!u || u.role === 'admin' || u.role === 'manager') return esc(label || u?.name || '—');
   const text = label || u.name || u.email;
   return `<button type="button" class="link-btn" data-user="${uid}">${esc(text)}</button>`;
 }
@@ -113,6 +121,11 @@ function buildNavUrl(nav) {
 }
 
 function applyNav(nav, { rerender = true } = {}) {
+  if (isWorkerPortal()) {
+    nav = { tab: 'jobs', orderId: nav.orderId || null, userUid: null };
+  } else if (isManager() && ['services', 'pricing'].includes(nav.tab)) {
+    nav = { ...nav, tab: 'overview' };
+  }
   state.selectedOrderId = nav.orderId || null;
   state.selectedUserUid = nav.userUid || null;
   const tab = nav.tab || 'overview';
@@ -196,16 +209,37 @@ function wireChecklistRemoves() {
 
 // ── Auth ────────────────────────────────────────────────────────────
 
+function applyRoleShell() {
+  const role = state.user?.role;
+  const brand = role === 'worker' ? 'HMM WORKER' : role === 'manager' ? 'HMM MANAGER' : 'HMM ADMIN';
+  $('.brand').textContent = brand;
+
+  const tabs = {
+    overview: isStaff(),
+    jobs: true,
+    users: isStaff(),
+    services: isAdmin(),
+    pricing: isAdmin(),
+  };
+  $$('.nav-btn').forEach(btn => {
+    const tab = btn.dataset.tab;
+    btn.classList.toggle('hidden', !tabs[tab]);
+  });
+}
+
 async function login(email, password) {
   const res = await api('POST', '/auth/login', { email, password });
-  if (res.user.role !== 'admin') throw new Error('Admin accounts only');
+  if (!DASHBOARD_ROLES.includes(res.user.role)) {
+    throw new Error('Staff accounts only (admin, manager, or worker)');
+  }
   localStorage.setItem(TOKEN_KEY, res.token);
   state.user = res.user;
   $('#login-view').classList.add('hidden');
   $('#app-view').classList.remove('hidden');
-  $('#admin-name').textContent = res.user.name || res.user.email;
+  $('#admin-name').textContent = `${res.user.name || res.user.email} · ${res.user.role}`;
+  applyRoleShell();
   await refreshAll();
-  const nav = { tab: 'overview', orderId: null, userUid: null };
+  const nav = { tab: isWorkerPortal() ? 'jobs' : 'overview', orderId: null, userUid: null };
   suppressNavPush = true;
   applyNav(nav);
   replaceNav(nav);
@@ -248,21 +282,33 @@ $$('.nav-btn').forEach(btn => {
 // ── Data ────────────────────────────────────────────────────────────
 
 async function refreshAll() {
-  const [orders, users, services, pricing] = await Promise.all([
+  if (isWorkerPortal()) {
+    state.orders = await api('GET', '/orders');
+    renderJobsTable();
+    if (state.selectedOrderId) renderJobDetail();
+    await refreshNotifications();
+    return;
+  }
+
+  const fetches = [
     api('GET', '/orders'),
     api('GET', '/admin/users'),
     api('GET', '/services'),
-    api('GET', '/admin/pricing'),
-  ]);
-  state.orders = orders;
-  state.users = users;
-  state.services = services;
-  state.pricing = pricing;
-  renderOverview();
+  ];
+  if (isAdmin()) fetches.push(api('GET', '/admin/pricing'));
+  const results = await Promise.all(fetches);
+  state.orders = results[0];
+  state.users = results[1];
+  state.services = results[2];
+  state.pricing = isAdmin() ? results[3] : null;
+
+  if (isStaff()) renderOverview();
   renderJobsTable();
-  renderUsersTable();
-  renderServicesTable();
-  renderPricing();
+  if (isStaff()) renderUsersTable();
+  if (isAdmin()) {
+    renderServicesTable();
+    renderPricing();
+  }
   if (state.selectedOrderId) renderJobDetail();
   if (state.selectedUserUid) renderUserDetail();
   await refreshNotifications();
@@ -503,6 +549,8 @@ function renderJobDetail() {
   const preferredDates = (o.preferredDates || []).map(d => `<li>${fmtDate(d)}</li>`).join('')
     || (o.scheduledDate ? `<li>${fmtDate(o.scheduledDate)}</li>` : '<li class="empty">None</li>');
   const isPending = o.status === 'pendingConfirmation';
+  const readOnly = isWorkerPortal();
+  const showStaffControls = isStaff();
 
   const workerNotes = (o.workerNotes || []).map(n => `
     <div class="note-block">
@@ -511,9 +559,14 @@ function renderJobDetail() {
     </div>
   `).join('') || (o.workerNote ? `<div class="note-block">${esc(o.workerNote)}</div>` : '<p class="empty">No worker notes.</p>');
 
+  const checklistReadOnly = (o.checklistItems || []).map(item =>
+    `<p>${item.isCompleted ? '☑' : '☐'} ${esc(item.title)}</p>`
+  ).join('') || '<p class="empty">No tasks yet.</p>';
+
   el.innerHTML = `
     <div class="toolbar">
       <span>${statusBadge(o.status)}</span>
+      ${readOnly ? '<span class="empty" style="margin-left:12px">View only — use the worker app to update jobs</span>' : ''}
     </div>
     <div class="detail-grid">
       <div>
@@ -525,13 +578,14 @@ function renderJobDetail() {
           <p><strong>Scheduled:</strong> ${isPending ? '— (not confirmed)' : fmtDate(o.scheduledDate)}</p>
           ${o.confirmedAt ? `<p><strong>Confirmed:</strong> ${fmtDate(o.confirmedAt)}</p>` : ''}
           ${o.redoFromOrderId ? `<p><strong>Redo from job:</strong> ${esc(o.redoFromOrderId)}</p>` : ''}
-          <p><strong>Customer:</strong> ${userLink(o.customerUID, userName(o.customerUID))}</p>
+          <p><strong>Customer:</strong> ${showStaffControls ? userLink(o.customerUID, userName(o.customerUID)) : esc(userName(o.customerUID))}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
           <p><strong>Price:</strong> $${o.estimatedPrice || 0}</p>
           <div class="card" style="margin-top:12px;padding:12px;background:#111">
             <strong>Customer Preferred Dates</strong>
             <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted)">${preferredDates}</ul>
           </div>
+          ${showStaffControls ? `
           ${isPending ? `
           <div class="field" style="margin-top:12px">
             <label>Confirm Visit Date</label>
@@ -554,7 +608,11 @@ function renderJobDetail() {
             <label>Scheduled Date</label>
             <input type="datetime-local" id="f-date" value="${toLocalInput(o.scheduledDate)}">
           </div>
+          ` : `
+          <p><strong>Worker:</strong> ${esc(userName(o.assignedWorkerUID))}</p>
+          `}
         </div>
+        ${showStaffControls ? `
         <div class="card">
           <h3>Admin Note (private)</h3>
           <textarea id="f-admin-note" rows="4">${esc(o.adminNote || '')}</textarea>
@@ -573,8 +631,14 @@ function renderJobDetail() {
         </div>
         <div class="actions">
           <button class="btn btn-primary" id="save-job">Save Changes</button>
-          <button class="btn btn-danger" id="delete-job">Delete Job</button>
+          ${canDelete() ? '<button class="btn btn-danger" id="delete-job">Delete Job</button>' : ''}
         </div>
+        ` : `
+        <div class="card">
+          <h3>Checklist</h3>
+          ${checklistReadOnly}
+        </div>
+        `}
       </div>
       <div>
         <div class="card">
@@ -599,55 +663,59 @@ function renderJobDetail() {
     </div>
   `;
 
-  wireChecklistRemoves();
+  if (showStaffControls) {
+    wireChecklistRemoves();
 
-  const taskPick = $('#task-pick');
-  const taskCustom = $('#task-custom');
-  taskPick.addEventListener('change', () => {
-    const custom = taskPick.value === '__custom__';
-    taskCustom.classList.toggle('hidden', !custom);
-    if (custom) taskCustom.focus();
-    else taskCustom.value = '';
-  });
-  $('#confirm-add-task').addEventListener('click', () => {
-    let title = '';
-    if (taskPick.value === '__custom__') {
-      title = taskCustom.value.trim();
-      if (!title) { toast('Enter a custom task title'); return; }
-    } else if (taskPick.value) {
-      title = taskPick.value;
-    } else {
-      toast('Choose a task or type custom');
-      return;
+    const taskPick = $('#task-pick');
+    const taskCustom = $('#task-custom');
+    if (taskPick && taskCustom) {
+      taskPick.addEventListener('change', () => {
+        const custom = taskPick.value === '__custom__';
+        taskCustom.classList.toggle('hidden', !custom);
+        if (custom) taskCustom.focus();
+        else taskCustom.value = '';
+      });
+      $('#confirm-add-task').addEventListener('click', () => {
+        let title = '';
+        if (taskPick.value === '__custom__') {
+          title = taskCustom.value.trim();
+          if (!title) { toast('Enter a custom task title'); return; }
+        } else if (taskPick.value) {
+          title = taskPick.value;
+        } else {
+          toast('Choose a task or type custom');
+          return;
+        }
+        const existing = getChecklist().some(i => i.title.toLowerCase() === title.toLowerCase());
+        if (existing) { toast('Task already on checklist'); return; }
+        appendChecklistRow(title);
+        taskPick.value = '';
+        taskCustom.value = '';
+        taskCustom.classList.add('hidden');
+        toast('Task added — click Save Changes');
+      });
     }
-    const existing = getChecklist().some(i => i.title.toLowerCase() === title.toLowerCase());
-    if (existing) { toast('Task already on checklist'); return; }
-    appendChecklistRow(title);
-    taskPick.value = '';
-    taskCustom.value = '';
-    taskCustom.classList.add('hidden');
-    toast('Task added — click Save Changes');
-  });
 
-  wireUserLinks(el);
+    const confirmBtn = $('#confirm-schedule');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', async () => {
+        try {
+          const dateVal = $('#f-confirm-date').value;
+          if (!dateVal) { toast('Pick a date to confirm'); return; }
+          await api('POST', `/admin/orders/${o.id}/confirm-schedule`, {
+            scheduledDate: new Date(dateVal).toISOString(),
+          });
+          await refreshAll();
+          toast('Visit confirmed — customer notified');
+        } catch (ex) { toast(ex.message); }
+      });
+    }
 
-  const confirmBtn = $('#confirm-schedule');
-  if (confirmBtn) {
-    confirmBtn.addEventListener('click', async () => {
-      try {
-        const dateVal = $('#f-confirm-date').value;
-        if (!dateVal) { toast('Pick a date to confirm'); return; }
-        await api('POST', `/admin/orders/${o.id}/confirm-schedule`, {
-          scheduledDate: new Date(dateVal).toISOString(),
-        });
-        await refreshAll();
-        toast('Visit confirmed — customer notified');
-      } catch (ex) { toast(ex.message); }
-    });
+    $('#save-job')?.addEventListener('click', () => saveJob(o.id));
+    $('#delete-job')?.addEventListener('click', () => deleteJob(o.id));
   }
 
-  $('#save-job').addEventListener('click', () => saveJob(o.id));
-  $('#delete-job').addEventListener('click', () => deleteJob(o.id));
+  wireUserLinks(el);
 }
 
 function getChecklist() {
@@ -706,7 +774,7 @@ function renderUsersTable() {
     const alerts = u.notifyApp !== false ? '🔔' : '🔕';
     return `
     <tr>
-      <td>${u.role === 'admin' ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
+      <td>${['admin', 'manager'].includes(u.role) ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.email)}</td>
       <td>${u.role}</td>
       <td>${esc(u.region || '—')}</td>
@@ -797,18 +865,21 @@ async function renderUserDetail() {
         <p><strong>Role:</strong> ${u.role}</p>
         <p><strong>Joined:</strong> ${fmtDate(u.createdAt)}</p>
         ${profileExtra}
-        ${u.role !== 'admin' ? `
+        ${!['admin', 'manager'].includes(u.role) && isStaff() ? `
         <form id="admin-user-form" style="margin-top:16px">
+          ${isAdmin() ? `
           <div class="field">
             <label>Role</label>
             <select id="u-role">
               <option value="customer" ${u.role === 'customer' ? 'selected' : ''}>Customer</option>
               <option value="worker" ${u.role === 'worker' ? 'selected' : ''}>Worker</option>
+              <option value="manager" ${u.role === 'manager' ? 'selected' : ''}>Manager</option>
             </select>
           </div>
+          ` : `<p><strong>Role:</strong> ${esc(u.role)} <span class="empty">(only admins can change roles)</span></p>`}
           <div id="customer-only-fields" class="${u.role === 'customer' ? '' : 'hidden'}">
             <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
-            <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
+            <div class="field"><label>Address</label><input id="u-address" value="${esc(u.address || '')}"></div>
             <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
           </div>
           <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
@@ -818,7 +889,7 @@ async function renderUserDetail() {
           </div>
           <button type="submit" class="btn btn-primary">Save User</button>
         </form>
-        <p class="empty" style="margin-top:8px">App signups are always customers. Change to Worker here to grant field-worker app access.</p>
+        ${isAdmin() ? '<p class="empty" style="margin-top:8px">App signups are always customers. Promote to Worker or Manager here.</p>' : ''}
         ` : ''}
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -854,20 +925,24 @@ async function renderUserDetail() {
     if (userForm) {
       userForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const newRole = $('#u-role').value;
-        if (newRole !== u.role) {
+        const roleEl = $('#u-role');
+        const newRole = roleEl ? roleEl.value : u.role;
+        if (roleEl && newRole !== u.role) {
           const msg = newRole === 'worker'
             ? 'Change to Worker? They will get worker app access and lose active customer subscription.'
-            : 'Change to Customer? They will get customer app access and subscription billing.';
+            : newRole === 'manager'
+              ? 'Change to Manager? They will get web dashboard access (no delete permissions) and lose customer subscription.'
+              : 'Change to Customer? They will get customer app access and subscription billing.';
           if (!confirm(msg)) return;
         }
         try {
           const body = {
-            role: newRole,
             phoneNumber: $('#u-phone').value.trim(),
             notifyApp: $('#u-notify-app').checked,
           };
-          if (newRole === 'customer') {
+          if (roleEl) body.role = newRole;
+          const roleForFields = roleEl ? newRole : u.role;
+          if (roleForFields === 'customer') {
             body.region = $('#u-region').value.trim();
             body.address = $('#u-address').value.trim();
             body.unitNumber = $('#u-unit').value.trim();
@@ -982,11 +1057,12 @@ function toLocalInput(iso) {
   if (!token) return;
   try {
     const user = await api('GET', '/auth/me').then(r => r.user);
-    if (user.role !== 'admin') { logout(); return; }
+    if (!DASHBOARD_ROLES.includes(user.role)) { logout(); return; }
     state.user = user;
     $('#login-view').classList.add('hidden');
     $('#app-view').classList.remove('hidden');
-    $('#admin-name').textContent = user.name || user.email;
+    $('#admin-name').textContent = `${user.name || user.email} · ${user.role}`;
+    applyRoleShell();
     await refreshAll();
     const nav = parseNavFromUrl();
     suppressNavPush = true;

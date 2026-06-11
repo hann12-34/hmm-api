@@ -14,8 +14,11 @@ async function pushToUser(userUID, { title, body, type, orderId }) {
 }
 
 async function pushToAdmins(payload) {
-  const admins = await User.find({ role: 'admin', notifyApp: { $ne: false } });
-  return Promise.all(admins.map(a => pushToUser(a.uid, payload)));
+  const staff = await User.find({
+    role: { $in: ['admin', 'manager'] },
+    notifyApp: { $ne: false },
+  });
+  return Promise.all(staff.map(a => pushToUser(a.uid, payload)));
 }
 
 async function onVisitRequested(customer, order) {

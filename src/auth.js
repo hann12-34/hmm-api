@@ -32,4 +32,18 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { signToken, authMiddleware, requireRole };
+const STAFF_ROLES = ['admin', 'manager'];
+const DASHBOARD_ROLES = ['admin', 'manager', 'worker'];
+
+function isStaffRole(role) {
+  return STAFF_ROLES.includes(role);
+}
+
+module.exports = {
+  signToken,
+  authMiddleware,
+  requireRole,
+  STAFF_ROLES,
+  DASHBOARD_ROLES,
+  isStaffRole,
+};

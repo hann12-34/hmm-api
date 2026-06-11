@@ -11,6 +11,7 @@ const { DEFAULTS } = require('../src/pricing');
 
 const ACCOUNTS = [
   { email: 'admin@hmm.com', password: 'hmm123', name: 'Admin', role: 'admin' },
+  { email: 'manager@hmm.com', password: 'hmm123', name: 'Manager', role: 'manager' },
   { email: 'worker@hmm.com', password: 'hmm123', name: 'Worker', role: 'worker' },
   { email: 'client@hmm.com', password: 'hmm123', name: 'Client', role: 'customer',
     unitNumber: '101', address: '123 Main St, Burnaby', region: 'Lougheed' },
