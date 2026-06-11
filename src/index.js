@@ -442,15 +442,19 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'Not found' });
   if (req.body.name !== undefined) user.name = String(req.body.name).trim();
   if (req.body.phoneNumber !== undefined) user.phoneNumber = String(req.body.phoneNumber).trim();
+  if (req.body.notifyEmail !== undefined) user.notifyEmail = !!req.body.notifyEmail;
+  if (req.body.notifySms !== undefined) user.notifySms = !!req.body.notifySms;
   await user.save();
   res.json(user.toPublic());
 });
 
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
-  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber'];
+  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber', 'notifyEmail', 'notifySms'];
   const patch = {};
   for (const k of allowed) {
-    if (req.body[k] !== undefined) patch[k] = req.body[k];
+    if (req.body[k] !== undefined) {
+      patch[k] = (k === 'notifyEmail' || k === 'notifySms') ? !!req.body[k] : req.body[k];
+    }
   }
   const user = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
   if (!user) return res.status(404).json({ error: 'Not found' });

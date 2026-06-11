@@ -65,12 +65,22 @@ function fmtDate(d) {
   return new Date(d).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+function wantsEmail(user) {
+  return user && user.notifyEmail !== false;
+}
+
+function wantsSms(user) {
+  return user && user.notifySms !== false && !!user.phoneNumber;
+}
+
 async function notifyCustomer(user, { subject, emailHtml, smsText }) {
   if (!user) return;
-  await Promise.all([
-    sendEmail(user.email, subject, emailHtml),
-    user.phoneNumber ? sendSMS(user.phoneNumber, smsText) : Promise.resolve(),
-  ]);
+  const tasks = [];
+  if (wantsEmail(user)) tasks.push(sendEmail(user.email, subject, emailHtml));
+  else console.log(`[notify:email] skipped (opt-out) — ${user.email}`);
+  if (wantsSms(user)) tasks.push(sendSMS(user.phoneNumber, smsText));
+  else if (user.phoneNumber) console.log(`[notify:sms] skipped (opt-out) — ${user.phoneNumber}`);
+  await Promise.all(tasks);
 }
 
 async function notifyAdmin(subject, html) {

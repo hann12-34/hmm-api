@@ -550,6 +550,9 @@ function renderUsersTable() {
     const locked = u.role === 'customer'
       ? `$${u.planAmount ?? (u.subscriptionPlan === 'annual' ? u.lockedAnnualPrice : u.lockedMonthlyPrice) ?? '—'}`
       : '—';
+    const alerts = u.role === 'customer'
+      ? `${u.notifyEmail !== false ? '📧' : ''}${u.notifySms !== false ? ' 📱' : ''}`.trim() || '—'
+      : '—';
     return `
     <tr>
       <td>${u.role === 'admin' ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
@@ -558,10 +561,11 @@ function renderUsersTable() {
       <td>${esc(u.unitNumber || '—')}</td>
       <td>${plan}</td>
       <td>${locked}</td>
+      <td>${alerts}</td>
       <td class="${subClass}">${u.subscriptionStatus || '—'}</td>
       <td>${fmtDate(u.createdAt)}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">No users.</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="empty">No users.</td></tr>';
   wireUserLinks(tbody);
 }
 
@@ -606,6 +610,8 @@ async function renderUserDetail() {
         <p><strong>Renewal:</strong> ${fmtDate(u.renewalDate)}</p>
         <p><strong>Signup Fee:</strong> ${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0} paid` : '—'}</p>
         <p><strong>Card:</strong> ${u.cardBrand && u.cardLast4 ? `${u.cardBrand} •••• ${u.cardLast4}` : '—'}</p>
+        <p><strong>Email alerts:</strong> ${u.notifyEmail !== false ? 'On' : 'Off'}</p>
+        <p><strong>SMS alerts:</strong> ${u.notifySms !== false ? 'On' : 'Off'}</p>
       `;
     }
 
@@ -648,6 +654,14 @@ async function renderUserDetail() {
           <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
           <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
           <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
+          <div class="field" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="u-notify-email" ${u.notifyEmail !== false ? 'checked' : ''} style="width:auto">
+            <label for="u-notify-email" style="margin:0">Email notifications</label>
+          </div>
+          <div class="field" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="u-notify-sms" ${u.notifySms !== false ? 'checked' : ''} style="width:auto">
+            <label for="u-notify-sms" style="margin:0">SMS notifications</label>
+          </div>
           <button type="submit" class="btn btn-primary">Save Customer Info</button>
         </form>
         <p class="empty" style="margin-top:8px">Address changes are admin-only to prevent account sharing.</p>
@@ -687,6 +701,8 @@ async function renderUserDetail() {
             address: $('#u-address').value.trim(),
             unitNumber: $('#u-unit').value.trim(),
             phoneNumber: $('#u-phone').value.trim(),
+            notifyEmail: $('#u-notify-email').checked,
+            notifySms: $('#u-notify-sms').checked,
           });
           await refreshAll();
           toast('Customer info saved');

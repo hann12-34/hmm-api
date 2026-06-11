@@ -9,6 +9,8 @@ const userSchema = new mongoose.Schema({
   unitNumber: String,
   address: String,
   phoneNumber: String,
+  notifyEmail: { type: Boolean, default: true },
+  notifySms: { type: Boolean, default: true },
   subscriptionStatus: { type: String, default: 'active' },
   subscriptionPlan: { type: String, default: 'monthly' },
   renewalDate: Date,
