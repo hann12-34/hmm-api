@@ -14,6 +14,8 @@ let state = {
   pollTimer: null,
 };
 
+let suppressNavPush = false;
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -92,12 +94,73 @@ function switchTab(tab) {
   $('#page-title').textContent = activeBtn ? activeBtn.textContent.trim() : tab;
 }
 
-async function openUser(uid) {
-  state.selectedUserUid = uid;
-  switchTab('users');
-  $('#users-list-panel').classList.add('hidden');
-  $('#user-detail-panel').classList.remove('hidden');
-  await renderUserDetail();
+function parseNavFromUrl() {
+  const p = new URLSearchParams(location.search);
+  return {
+    tab: p.get('tab') || 'overview',
+    orderId: p.get('job') || null,
+    userUid: p.get('user') || null,
+  };
+}
+
+function buildNavUrl(nav) {
+  const p = new URLSearchParams();
+  if (nav.tab && nav.tab !== 'overview') p.set('tab', nav.tab);
+  if (nav.orderId) p.set('job', nav.orderId);
+  if (nav.userUid) p.set('user', nav.userUid);
+  const qs = p.toString();
+  return qs ? `${location.pathname}?${qs}` : location.pathname;
+}
+
+function applyNav(nav, { rerender = true } = {}) {
+  state.selectedOrderId = nav.orderId || null;
+  state.selectedUserUid = nav.userUid || null;
+  const tab = nav.tab || 'overview';
+  switchTab(tab);
+
+  if (tab === 'jobs') {
+    const showDetail = !!nav.orderId;
+    $('#jobs-list-panel').classList.toggle('hidden', showDetail);
+    $('#job-detail-panel').classList.toggle('hidden', !showDetail);
+    if (showDetail && rerender) renderJobDetail();
+  } else {
+    $('#jobs-list-panel').classList.remove('hidden');
+    $('#job-detail-panel').classList.add('hidden');
+  }
+
+  if (tab === 'users') {
+    const showDetail = !!nav.userUid;
+    $('#users-list-panel').classList.toggle('hidden', showDetail);
+    $('#user-detail-panel').classList.toggle('hidden', !showDetail);
+    if (showDetail && rerender) renderUserDetail();
+  } else {
+    $('#users-list-panel').classList.remove('hidden');
+    $('#user-detail-panel').classList.add('hidden');
+  }
+
+  if (tab === 'pricing' && rerender) renderPricing();
+}
+
+function pushNav(nav) {
+  if (suppressNavPush) return;
+  history.pushState(nav, '', buildNavUrl(nav));
+}
+
+function replaceNav(nav) {
+  history.replaceState(nav, '', buildNavUrl(nav));
+}
+
+function navigate(nav) {
+  applyNav(nav);
+  pushNav(nav);
+}
+
+function openUser(uid) {
+  navigate({
+    tab: 'users',
+    orderId: state.selectedOrderId,
+    userUid: uid,
+  });
 }
 
 function taskTemplateOptions() {
@@ -142,6 +205,11 @@ async function login(email, password) {
   $('#app-view').classList.remove('hidden');
   $('#admin-name').textContent = res.user.name || res.user.email;
   await refreshAll();
+  const nav = { tab: 'overview', orderId: null, userUid: null };
+  suppressNavPush = true;
+  applyNav(nav);
+  replaceNav(nav);
+  suppressNavPush = false;
   state.pollTimer = setInterval(refreshAll, 10000);
 }
 
@@ -158,32 +226,22 @@ $('#login-form').addEventListener('submit', async (e) => {
 
 $('#logout-btn').addEventListener('click', logout);
 
+window.addEventListener('popstate', (e) => {
+  suppressNavPush = true;
+  applyNav(e.state || parseNavFromUrl());
+  suppressNavPush = false;
+});
+
 // ── Navigation ──────────────────────────────────────────────────────
 
 $$('.nav-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    switchTab(btn.dataset.tab);
-    if (btn.dataset.tab === 'jobs') {
-      if (state.selectedOrderId) {
-        $('#jobs-list-panel').classList.add('hidden');
-        $('#job-detail-panel').classList.remove('hidden');
-        renderJobDetail();
-      } else {
-        $('#jobs-list-panel').classList.remove('hidden');
-        $('#job-detail-panel').classList.add('hidden');
-      }
-    }
-    if (btn.dataset.tab === 'users') {
-      if (state.selectedUserUid) {
-        $('#users-list-panel').classList.add('hidden');
-        $('#user-detail-panel').classList.remove('hidden');
-        renderUserDetail();
-      } else {
-        $('#users-list-panel').classList.remove('hidden');
-        $('#user-detail-panel').classList.add('hidden');
-      }
-    }
-    if (btn.dataset.tab === 'pricing') renderPricing();
+    const tab = btn.dataset.tab;
+    navigate({
+      tab,
+      orderId: null,
+      userUid: null,
+    });
   });
 });
 
@@ -394,18 +452,14 @@ function renderJobsTable() {
 }
 
 function openJob(id) {
-  state.selectedOrderId = id;
-  switchTab('jobs');
-  $('#jobs-list-panel').classList.add('hidden');
-  $('#job-detail-panel').classList.remove('hidden');
-  renderJobDetail();
+  navigate({
+    tab: 'jobs',
+    orderId: id,
+    userUid: state.selectedUserUid,
+  });
 }
 
-$('#back-jobs').addEventListener('click', () => {
-  state.selectedOrderId = null;
-  $('#job-detail-panel').classList.add('hidden');
-  $('#jobs-list-panel').classList.remove('hidden');
-});
+$('#back-jobs').addEventListener('click', () => history.back());
 
 function renderJobDetail() {
   const o = state.orders.find(x => x.id === state.selectedOrderId);
@@ -601,11 +655,9 @@ async function deleteJob(id) {
   if (!confirm('Delete this job permanently?')) return;
   try {
     await api('DELETE', `/orders/${id}`);
-    state.selectedOrderId = null;
-    $('#job-detail-panel').classList.add('hidden');
-    $('#jobs-list-panel').classList.remove('hidden');
     await refreshAll();
     toast('Job deleted');
+    history.back();
   } catch (ex) { toast(ex.message); }
 }
 
@@ -647,11 +699,7 @@ function renderUsersTable() {
 
 $('#user-filter').addEventListener('change', renderUsersTable);
 
-$('#back-users').addEventListener('click', () => {
-  state.selectedUserUid = null;
-  $('#user-detail-panel').classList.add('hidden');
-  $('#users-list-panel').classList.remove('hidden');
-});
+$('#back-users').addEventListener('click', () => history.back());
 
 function planLabel(plan) {
   if (plan === 'signup_fee') return 'Signup Fee';
@@ -756,10 +804,7 @@ async function renderUserDetail() {
     `;
 
     el.querySelectorAll('.link-btn[data-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        switchTab('jobs');
-        openJob(btn.dataset.id);
-      });
+      btn.addEventListener('click', () => openJob(btn.dataset.id));
     });
     wireUserLinks(el);
 
@@ -888,6 +933,11 @@ function toLocalInput(iso) {
     $('#app-view').classList.remove('hidden');
     $('#admin-name').textContent = user.name || user.email;
     await refreshAll();
+    const nav = parseNavFromUrl();
+    suppressNavPush = true;
+    applyNav(nav);
+    replaceNav(nav);
+    suppressNavPush = false;
     state.pollTimer = setInterval(refreshAll, 10000);
   } catch { logout(); }
 })();
