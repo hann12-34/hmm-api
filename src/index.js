@@ -5,7 +5,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { User, WorkOrder, Payment, ServiceType, orderToJSON } = require('./models');
+const { User, WorkOrder, Payment, ServiceType, AppNotification, orderToJSON } = require('./models');
 const { signToken, authMiddleware, requireRole } = require('./auth');
 const {
   getPricingConfig,
@@ -14,7 +14,12 @@ const {
   billAmountForUser,
   migrateLegacyPricing,
 } = require('./pricing');
-const { notifyVisitRequested, notifyVisitConfirmed, notifyRedoCreated } = require('./notify');
+const {
+  onVisitRequested,
+  onVisitConfirmed,
+  onRedoCreated,
+  notificationToJSON,
+} = require('./appNotify');
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -171,7 +176,7 @@ app.post('/api/orders', authMiddleware, requireRole('customer', 'admin'), async 
   });
   if (!isAdmin) {
     const customer = await User.findOne({ uid: customerUID });
-    notifyVisitRequested(customer, order).catch(console.error);
+    onVisitRequested(customer, order).catch(console.error);
   }
   res.status(201).json(orderToJSON(order));
 });
@@ -250,7 +255,7 @@ app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), as
         adminNote: `Auto-created redo from completed visit (rating: ${rating}/5)`,
       });
       const customer = await User.findOne({ uid: order.customerUID });
-      notifyRedoCreated(customer, order, redoOrder).catch(console.error);
+      onRedoCreated(customer, order, redoOrder).catch(console.error);
     }
   }
 
@@ -442,18 +447,17 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'Not found' });
   if (req.body.name !== undefined) user.name = String(req.body.name).trim();
   if (req.body.phoneNumber !== undefined) user.phoneNumber = String(req.body.phoneNumber).trim();
-  if (req.body.notifyEmail !== undefined) user.notifyEmail = !!req.body.notifyEmail;
-  if (req.body.notifySms !== undefined) user.notifySms = !!req.body.notifySms;
+  if (req.body.notifyApp !== undefined) user.notifyApp = !!req.body.notifyApp;
   await user.save();
   res.json(user.toPublic());
 });
 
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
-  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber', 'notifyEmail', 'notifySms'];
+  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber', 'notifyApp'];
   const patch = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) {
-      patch[k] = (k === 'notifyEmail' || k === 'notifySms') ? !!req.body[k] : req.body[k];
+      patch[k] = k === 'notifyApp' ? !!req.body[k] : req.body[k];
     }
   }
   const user = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
@@ -555,8 +559,37 @@ app.post('/api/admin/orders/:id/confirm-schedule', authMiddleware, requireRole('
   order.confirmedAt = new Date();
   await order.save();
   const customer = await User.findOne({ uid: order.customerUID });
-  notifyVisitConfirmed(customer, order).catch(console.error);
+  onVisitConfirmed(customer, order).catch(console.error);
   res.json(orderToJSON(order));
+});
+
+// ── In-app notifications ─────────────────────────────────────────────
+app.get('/api/notifications', authMiddleware, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 100);
+  const items = await AppNotification.find({ userUID: req.user.uid })
+    .sort({ createdAt: -1 })
+    .limit(limit);
+  res.json(items.map(notificationToJSON));
+});
+
+app.get('/api/notifications/unread-count', authMiddleware, async (req, res) => {
+  const count = await AppNotification.countDocuments({ userUID: req.user.uid, read: false });
+  res.json({ count });
+});
+
+app.patch('/api/notifications/:id/read', authMiddleware, async (req, res) => {
+  const item = await AppNotification.findOneAndUpdate(
+    { _id: req.params.id, userUID: req.user.uid },
+    { read: true },
+    { new: true }
+  );
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  res.json(notificationToJSON(item));
+});
+
+app.post('/api/notifications/read-all', authMiddleware, async (req, res) => {
+  await AppNotification.updateMany({ userUID: req.user.uid, read: false }, { read: true });
+  res.json({ ok: true });
 });
 
 app.delete('/api/orders/:id', authMiddleware, requireRole('admin'), async (req, res) => {

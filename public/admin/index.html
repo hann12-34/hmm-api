@@ -41,8 +41,22 @@
     <div class="main">
       <header class="topbar">
         <h2 id="page-title">Overview</h2>
-        <div>
-          <span id="admin-name" style="color:var(--muted);margin-right:12px;font-size:0.9rem"></span>
+        <div style="display:flex;align-items:center;gap:8px;position:relative">
+          <button id="notif-btn" class="btn btn-ghost notif-btn" type="button" title="Notifications">
+            🔔 <span id="notif-count" class="notif-count hidden">0</span>
+          </button>
+          <div id="notif-panel" class="notif-panel hidden">
+            <div class="notif-panel-head">
+              <strong>Notifications</strong>
+              <button id="notif-read-all" class="link-btn" type="button">Mark all read</button>
+            </div>
+            <div id="notif-list" class="notif-list"></div>
+            <label class="notif-pref">
+              <input type="checkbox" id="admin-notify-app" checked>
+              App notifications
+            </label>
+          </div>
+          <span id="admin-name" style="color:var(--muted);font-size:0.9rem"></span>
           <button id="logout-btn" class="btn btn-ghost">Sign Out</button>
         </div>
       </header>

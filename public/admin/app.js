@@ -9,6 +9,8 @@ let state = {
   pricing: null,
   selectedOrderId: null,
   selectedUserUid: null,
+  notifications: [],
+  unreadCount: 0,
   pollTimer: null,
 };
 
@@ -205,7 +207,83 @@ async function refreshAll() {
   renderPricing();
   if (state.selectedOrderId) renderJobDetail();
   if (state.selectedUserUid) renderUserDetail();
+  await refreshNotifications();
 }
+
+async function refreshNotifications() {
+  if (!state.user) return;
+  try {
+    const [items, countRes] = await Promise.all([
+      api('GET', '/notifications?limit=30'),
+      api('GET', '/notifications/unread-count'),
+    ]);
+    state.notifications = items;
+    state.unreadCount = countRes.count || 0;
+    renderNotificationUI();
+  } catch { /* ignore poll errors */ }
+}
+
+function renderNotificationUI() {
+  const badge = $('#notif-count');
+  if (state.unreadCount > 0) {
+    badge.textContent = state.unreadCount > 99 ? '99+' : state.unreadCount;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  const list = $('#notif-list');
+  if (!list) return;
+  list.innerHTML = state.notifications.map(n => `
+    <div class="notif-item ${n.read ? '' : 'unread'}" data-notif="${n.id}" data-order="${esc(n.orderId || '')}">
+      <div class="n-title">${esc(n.title)}</div>
+      <div class="n-body">${esc(n.body)}</div>
+      <div class="n-time">${fmtDate(n.createdAt)}</div>
+    </div>
+  `).join('') || '<p class="empty" style="padding:12px">No notifications yet.</p>';
+
+  list.querySelectorAll('[data-notif]').forEach(el => {
+    el.addEventListener('click', async () => {
+      try {
+        await api('PATCH', `/notifications/${el.dataset.notif}/read`);
+        if (el.dataset.order) openJob(el.dataset.order);
+        await refreshNotifications();
+      } catch (ex) { toast(ex.message); }
+    });
+  });
+
+  const pref = $('#admin-notify-app');
+  if (pref && state.user) pref.checked = state.user.notifyApp !== false;
+}
+
+$('#notif-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('#notif-panel').classList.toggle('hidden');
+  refreshNotifications();
+});
+
+$('#notif-read-all').addEventListener('click', async (e) => {
+  e.stopPropagation();
+  try {
+    await api('POST', '/notifications/read-all');
+    await refreshNotifications();
+    toast('All marked read');
+  } catch (ex) { toast(ex.message); }
+});
+
+$('#admin-notify-app').addEventListener('change', async (e) => {
+  try {
+    const user = await api('PATCH', '/users/me/profile', { notifyApp: e.target.checked });
+    state.user = user;
+    toast(e.target.checked ? 'App notifications on' : 'App notifications off');
+  } catch (ex) {
+    e.target.checked = !e.target.checked;
+    toast(ex.message);
+  }
+});
+
+$('#notif-panel')?.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => $('#notif-panel')?.classList.add('hidden'));
 
 // ── Overview / Stats ────────────────────────────────────────────────
 
@@ -550,9 +628,7 @@ function renderUsersTable() {
     const locked = u.role === 'customer'
       ? `$${u.planAmount ?? (u.subscriptionPlan === 'annual' ? u.lockedAnnualPrice : u.lockedMonthlyPrice) ?? '—'}`
       : '—';
-    const alerts = u.role === 'customer'
-      ? `${u.notifyEmail !== false ? '📧' : ''}${u.notifySms !== false ? ' 📱' : ''}`.trim() || '—'
-      : '—';
+    const alerts = u.notifyApp !== false ? '🔔' : '🔕';
     return `
     <tr>
       <td>${u.role === 'admin' ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
@@ -610,8 +686,7 @@ async function renderUserDetail() {
         <p><strong>Renewal:</strong> ${fmtDate(u.renewalDate)}</p>
         <p><strong>Signup Fee:</strong> ${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0} paid` : '—'}</p>
         <p><strong>Card:</strong> ${u.cardBrand && u.cardLast4 ? `${u.cardBrand} •••• ${u.cardLast4}` : '—'}</p>
-        <p><strong>Email alerts:</strong> ${u.notifyEmail !== false ? 'On' : 'Off'}</p>
-        <p><strong>SMS alerts:</strong> ${u.notifySms !== false ? 'On' : 'Off'}</p>
+        <p><strong>App alerts:</strong> ${u.notifyApp !== false ? 'On' : 'Off'}</p>
       `;
     }
 
@@ -655,12 +730,8 @@ async function renderUserDetail() {
           <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
           <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
           <div class="field" style="display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="u-notify-email" ${u.notifyEmail !== false ? 'checked' : ''} style="width:auto">
-            <label for="u-notify-email" style="margin:0">Email notifications</label>
-          </div>
-          <div class="field" style="display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="u-notify-sms" ${u.notifySms !== false ? 'checked' : ''} style="width:auto">
-            <label for="u-notify-sms" style="margin:0">SMS notifications</label>
+            <input type="checkbox" id="u-notify-app" ${u.notifyApp !== false ? 'checked' : ''} style="width:auto">
+            <label for="u-notify-app" style="margin:0">App notifications</label>
           </div>
           <button type="submit" class="btn btn-primary">Save Customer Info</button>
         </form>
@@ -701,8 +772,7 @@ async function renderUserDetail() {
             address: $('#u-address').value.trim(),
             unitNumber: $('#u-unit').value.trim(),
             phoneNumber: $('#u-phone').value.trim(),
-            notifyEmail: $('#u-notify-email').checked,
-            notifySms: $('#u-notify-sms').checked,
+            notifyApp: $('#u-notify-app').checked,
           });
           await refreshAll();
           toast('Customer info saved');

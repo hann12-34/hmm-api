@@ -9,8 +9,7 @@ const userSchema = new mongoose.Schema({
   unitNumber: String,
   address: String,
   phoneNumber: String,
-  notifyEmail: { type: Boolean, default: true },
-  notifySms: { type: Boolean, default: true },
+  notifyApp: { type: Boolean, default: true },
   subscriptionStatus: { type: String, default: 'active' },
   subscriptionPlan: { type: String, default: 'monthly' },
   renewalDate: Date,
@@ -91,6 +90,15 @@ const serviceTypeSchema = new mongoose.Schema({
   sortOrder: { type: Number, default: 0 },
 });
 
+const appNotificationSchema = new mongoose.Schema({
+  userUID: { type: String, required: true, index: true },
+  title: String,
+  body: String,
+  type: { type: String, default: 'general' },
+  orderId: String,
+  read: { type: Boolean, default: false },
+}, { timestamps: true });
+
 const pricingConfigSchema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'default' },
   signupFee: { type: Number, default: 99 },
@@ -124,5 +132,6 @@ module.exports = {
   Payment: mongoose.model('Payment', paymentSchema),
   ServiceType: mongoose.model('ServiceType', serviceTypeSchema),
   PricingConfig: mongoose.model('PricingConfig', pricingConfigSchema),
+  AppNotification: mongoose.model('AppNotification', appNotificationSchema),
   orderToJSON,
 };
