@@ -217,6 +217,7 @@ function computeStats() {
   const cancelled = customers.filter(u => u.subscriptionStatus === 'cancelled');
   const newMembers = customers.filter(u => u.createdAt && new Date(u.createdAt).getTime() >= monthAgo);
   const openJobs = state.orders.filter(o => !['completed', 'cancelled'].includes(o.status));
+  const pendingJobs = state.orders.filter(o => o.status === 'pendingConfirmation');
   const workers = state.users.filter(u => u.role === 'worker');
   const recentJoins = [...customers]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
@@ -224,7 +225,7 @@ function computeStats() {
   const recentCancelled = [...cancelled]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
     .slice(0, 8);
-  return { customers, active, cancelled, newMembers, openJobs, workers, recentJoins, recentCancelled };
+  return { customers, active, cancelled, newMembers, openJobs, pendingJobs, workers, recentJoins, recentCancelled };
 }
 
 function renderOverview() {
@@ -256,6 +257,7 @@ function renderOverview() {
       <div class="stat-card"><div class="num">${s.cancelled.length}</div><div class="lbl">Cancelled</div></div>
       <div class="stat-card"><div class="num">${s.newMembers.length}</div><div class="lbl">New (Last 30 Days)</div></div>
       <div class="stat-card"><div class="num">${s.openJobs.length}</div><div class="lbl">Open Jobs</div></div>
+      <div class="stat-card"><div class="num">${s.pendingJobs.length}</div><div class="lbl">Awaiting Confirm</div></div>
       <div class="stat-card"><div class="num">${s.workers.length}</div><div class="lbl">Workers</div></div>
     </div>
     <div class="overview-cols">
@@ -299,7 +301,7 @@ function renderJobsTable() {
   tbody.innerHTML = rows.map(o => `
     <tr>
       <td><button class="link-btn" data-id="${o.id}">Unit ${o.unitNumber || '—'}</button></td>
-      <td>${fmtDate(o.scheduledDate)}</td>
+      <td>${o.status === 'pendingConfirmation' ? 'Awaiting confirm' : fmtDate(o.scheduledDate)}</td>
       <td>${statusBadge(o.status)}</td>
       <td>${userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID))}</td>
       <td>${(o.requestedServices || []).join(', ') || '—'}</td>
@@ -345,6 +347,10 @@ function renderJobDetail() {
     </div>
   `).join('');
 
+  const preferredDates = (o.preferredDates || []).map(d => `<li>${fmtDate(d)}</li>`).join('')
+    || (o.scheduledDate ? `<li>${fmtDate(o.scheduledDate)}</li>` : '<li class="empty">None</li>');
+  const isPending = o.status === 'pendingConfirmation';
+
   const workerNotes = (o.workerNotes || []).map(n => `
     <div class="note-block">
       <div class="note-meta">${fmtDate(n.createdAt)} · Worker</div>
@@ -362,10 +368,23 @@ function renderJobDetail() {
           <h3>Job Info</h3>
           <p><strong>Unit:</strong> ${esc(o.unitNumber)}</p>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
-          <p><strong>Scheduled:</strong> ${fmtDate(o.scheduledDate)}</p>
+          <p><strong>Scheduled:</strong> ${isPending ? '— (not confirmed)' : fmtDate(o.scheduledDate)}</p>
+          ${o.confirmedAt ? `<p><strong>Confirmed:</strong> ${fmtDate(o.confirmedAt)}</p>` : ''}
+          ${o.redoFromOrderId ? `<p><strong>Redo from job:</strong> ${esc(o.redoFromOrderId)}</p>` : ''}
           <p><strong>Customer:</strong> ${userLink(o.customerUID, userName(o.customerUID))}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
           <p><strong>Price:</strong> $${o.estimatedPrice || 0}</p>
+          <div class="card" style="margin-top:12px;padding:12px;background:#111">
+            <strong>Customer Preferred Dates</strong>
+            <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted)">${preferredDates}</ul>
+          </div>
+          ${isPending ? `
+          <div class="field" style="margin-top:12px">
+            <label>Confirm Visit Date</label>
+            <input type="datetime-local" id="f-confirm-date" value="${toLocalInput(o.scheduledDate)}">
+          </div>
+          <button type="button" class="btn btn-primary" id="confirm-schedule" style="margin-top:8px">Confirm Schedule & Notify Customer</button>
+          ` : ''}
           <div class="field" style="margin-top:12px">
             <label>Assign Worker</label>
             <select id="f-worker"><option value="">— Unassigned —</option>${workerOpts}</select>
@@ -373,7 +392,7 @@ function renderJobDetail() {
           <div class="field">
             <label>Status</label>
             <select id="f-status">
-              ${['scheduled','inProgress','paused','needsRevisit','completed','cancelled'].map(s =>
+              ${['pendingConfirmation','scheduled','inProgress','paused','needsRevisit','completed','cancelled'].map(s =>
                 `<option value="${s}" ${o.status===s?'selected':''}>${s}</option>`).join('')}
             </select>
           </div>
@@ -457,6 +476,21 @@ function renderJobDetail() {
   });
 
   wireUserLinks(el);
+
+  const confirmBtn = $('#confirm-schedule');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', async () => {
+      try {
+        const dateVal = $('#f-confirm-date').value;
+        if (!dateVal) { toast('Pick a date to confirm'); return; }
+        await api('POST', `/admin/orders/${o.id}/confirm-schedule`, {
+          scheduledDate: new Date(dateVal).toISOString(),
+        });
+        await refreshAll();
+        toast('Visit confirmed — customer notified');
+      } catch (ex) { toast(ex.message); }
+    });
+  }
 
   $('#save-job').addEventListener('click', () => saveJob(o.id));
   $('#delete-job').addEventListener('click', () => deleteJob(o.id));
@@ -609,6 +643,15 @@ async function renderUserDetail() {
         <p><strong>Role:</strong> ${u.role}</p>
         <p><strong>Joined:</strong> ${fmtDate(u.createdAt)}</p>
         ${profileExtra}
+        ${u.role === 'customer' ? `
+        <form id="admin-user-form" style="margin-top:16px">
+          <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
+          <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
+          <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
+          <button type="submit" class="btn btn-primary">Save Customer Info</button>
+        </form>
+        <p class="empty" style="margin-top:8px">Address changes are admin-only to prevent account sharing.</p>
+        ` : ''}
       </div>
       <div class="card" style="margin-bottom:20px">
         <h3>${orderTitle} (${orders.length})</h3>
@@ -634,6 +677,22 @@ async function renderUserDetail() {
       });
     });
     wireUserLinks(el);
+
+    const userForm = el.querySelector('#admin-user-form');
+    if (userForm) {
+      userForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+          await api('PATCH', `/users/${uid}`, {
+            address: $('#u-address').value.trim(),
+            unitNumber: $('#u-unit').value.trim(),
+            phoneNumber: $('#u-phone').value.trim(),
+          });
+          await refreshAll();
+          toast('Customer info saved');
+        } catch (ex) { toast(ex.message); }
+      });
+    }
   } catch (ex) {
     el.innerHTML = `<p class="empty">${esc(ex.message)}</p>`;
   }

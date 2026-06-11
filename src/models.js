@@ -65,6 +65,8 @@ const workOrderSchema = new mongoose.Schema({
   customerRating: { type: Number, default: 0 },
   customerFeedback: { type: String, default: '' },
   redoRequested: { type: Boolean, default: false },
+  redoFromOrderId: String,
+  confirmedAt: Date,
   requestedServices: [String],
   estimatedPrice: { type: Number, default: 0 },
   preferredDates: [Date],

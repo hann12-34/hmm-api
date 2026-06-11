@@ -14,6 +14,7 @@ const {
   billAmountForUser,
   migrateLegacyPricing,
 } = require('./pricing');
+const { notifyVisitRequested, notifyVisitConfirmed, notifyRedoCreated } = require('./notify');
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -154,6 +155,7 @@ app.post('/api/orders', authMiddleware, requireRole('customer', 'admin'), async 
   const body = req.body;
   const customerUID = req.user.role === 'admin' ? body.customerUID : req.user.uid;
   const slots = body.preferredDates?.length ? body.preferredDates.map(d => new Date(d)) : [new Date()];
+  const isAdmin = req.user.role === 'admin';
   const order = await WorkOrder.create({
     customerUID,
     unitNumber: body.unitNumber || '',
@@ -164,20 +166,43 @@ app.post('/api/orders', authMiddleware, requireRole('customer', 'admin'), async 
     requestedServices: body.requestedServices || [],
     estimatedPrice: body.estimatedPrice || 0,
     customerPhotos: body.customerPhotos || [],
-    status: 'scheduled',
+    status: isAdmin ? (body.status || 'scheduled') : 'pendingConfirmation',
+    confirmedAt: isAdmin ? new Date() : null,
   });
+  if (!isAdmin) {
+    const customer = await User.findOne({ uid: customerUID });
+    notifyVisitRequested(customer, order).catch(console.error);
+  }
   res.status(201).json(orderToJSON(order));
 });
 
 app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  const allowed = [
-    'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
-    'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status',
-  ];
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) order[key] = req.body[key];
+
+  if (req.user.role === 'customer') {
+    if (order.customerUID !== req.user.uid) return res.status(403).json({ error: 'Forbidden' });
+    if (order.status !== 'pendingConfirmation') {
+      return res.status(400).json({ error: 'Only pending requests can be edited' });
+    }
+    const customerAllowed = ['preferredDates', 'customerNote', 'requestedServices', 'estimatedPrice', 'customerPhotos'];
+    for (const key of customerAllowed) {
+      if (req.body[key] !== undefined) order[key] = req.body[key];
+    }
+    if (req.body.preferredDates?.length) {
+      order.preferredDates = req.body.preferredDates.map(d => new Date(d));
+      order.scheduledDate = order.preferredDates[0];
+    }
+    order.status = 'pendingConfirmation';
+    order.confirmedAt = null;
+  } else {
+    const allowed = [
+      'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
+      'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status',
+    ];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) order[key] = req.body[key];
+    }
   }
   await order.save();
   res.json(orderToJSON(order));
@@ -193,13 +218,45 @@ app.post('/api/orders/:id/cancel', authMiddleware, async (req, res) => {
 
 app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), async (req, res) => {
   const { rating, feedback, redoRequested } = req.body;
-  const order = await WorkOrder.findByIdAndUpdate(req.params.id, {
-    customerRating: rating,
-    customerFeedback: feedback,
-    redoRequested: !!redoRequested,
-  }, { new: true });
+  const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  res.json(orderToJSON(order));
+  if (order.customerUID !== req.user.uid) return res.status(403).json({ error: 'Forbidden' });
+
+  order.customerRating = rating;
+  order.customerFeedback = feedback || '';
+  order.redoRequested = !!redoRequested;
+  await order.save();
+
+  let redoOrder = null;
+  if (redoRequested) {
+    const existingRedo = await WorkOrder.findOne({
+      redoFromOrderId: order._id.toString(),
+      status: { $nin: ['completed', 'cancelled'] },
+    });
+    if (!existingRedo) {
+      const redoDate = new Date();
+      redoDate.setDate(redoDate.getDate() + 7);
+      redoOrder = await WorkOrder.create({
+        customerUID: order.customerUID,
+        unitNumber: order.unitNumber,
+        address: order.address,
+        scheduledDate: redoDate,
+        preferredDates: [redoDate],
+        status: 'pendingConfirmation',
+        customerNote: `Redo requested: ${feedback || 'Customer requested a follow-up visit'}`,
+        requestedServices: order.requestedServices || [],
+        estimatedPrice: 0,
+        redoFromOrderId: order._id.toString(),
+        adminNote: `Auto-created redo from completed visit (rating: ${rating}/5)`,
+      });
+      const customer = await User.findOne({ uid: order.customerUID });
+      notifyRedoCreated(customer, order, redoOrder).catch(console.error);
+    }
+  }
+
+  const result = orderToJSON(order);
+  if (redoOrder) result.redoJobId = redoOrder._id.toString();
+  res.json(result);
 });
 
 // ── Notes ─────────────────────────────────────────────────────────
@@ -380,8 +437,22 @@ app.get('/api/admin/users/:uid/history', authMiddleware, requireRole('admin'), a
   });
 });
 
+app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
+  const user = await User.findOne({ uid: req.user.uid });
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  if (req.body.name !== undefined) user.name = String(req.body.name).trim();
+  if (req.body.phoneNumber !== undefined) user.phoneNumber = String(req.body.phoneNumber).trim();
+  await user.save();
+  res.json(user.toPublic());
+});
+
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
-  const user = await User.findOneAndUpdate({ uid: req.params.uid }, req.body, { new: true });
+  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber'];
+  const patch = {};
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) patch[k] = req.body[k];
+  }
+  const user = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
   if (!user) return res.status(404).json({ error: 'Not found' });
   res.json(user.toPublic());
 });
@@ -425,7 +496,7 @@ app.patch('/api/users/me/plan', authMiddleware, requireRole('customer'), async (
 
 app.post('/api/users/me/cancel-subscription', authMiddleware, requireRole('customer'), async (req, res) => {
   await WorkOrder.updateMany(
-    { customerUID: req.user.uid, status: { $in: ['scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
+    { customerUID: req.user.uid, status: { $in: ['pendingConfirmation', 'scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
     { status: 'cancelled' }
   );
   const user = await User.findOneAndUpdate(
@@ -469,6 +540,19 @@ app.patch('/api/admin/services/:id', authMiddleware, requireRole('admin'), async
 app.delete('/api/admin/services/:id', authMiddleware, requireRole('admin'), async (req, res) => {
   await ServiceType.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
+});
+
+app.post('/api/admin/orders/:id/confirm-schedule', authMiddleware, requireRole('admin'), async (req, res) => {
+  const order = await WorkOrder.findById(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const date = req.body.scheduledDate ? new Date(req.body.scheduledDate) : order.scheduledDate;
+  order.scheduledDate = date;
+  order.status = 'scheduled';
+  order.confirmedAt = new Date();
+  await order.save();
+  const customer = await User.findOne({ uid: order.customerUID });
+  notifyVisitConfirmed(customer, order).catch(console.error);
+  res.json(orderToJSON(order));
 });
 
 app.delete('/api/orders/:id', authMiddleware, requireRole('admin'), async (req, res) => {
