@@ -13,7 +13,7 @@ const ACCOUNTS = [
   { email: 'admin@hmm.com', password: 'hmm123', name: 'Admin', role: 'admin' },
   { email: 'worker@hmm.com', password: 'hmm123', name: 'Worker', role: 'worker' },
   { email: 'client@hmm.com', password: 'hmm123', name: 'Client', role: 'customer',
-    unitNumber: '101', address: '123 Main St' },
+    unitNumber: '101', address: '123 Main St, Burnaby', region: 'Lougheed' },
 ];
 
 const DEFAULT_SERVICES = [
@@ -46,6 +46,7 @@ async function main() {
       role: acct.role,
       unitNumber: acct.unitNumber || '',
       address: acct.address || '',
+      region: acct.region || '',
       subscriptionStatus: 'active',
       subscriptionPlan: 'monthly',
       renewalDate: acct.role === 'customer' ? new Date(Date.now() + 30 * 86400000) : null,

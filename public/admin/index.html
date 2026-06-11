@@ -71,6 +71,9 @@
         <section id="tab-jobs" class="tab-panel hidden">
           <div id="jobs-list-panel">
             <div class="toolbar">
+              <select id="job-region-filter">
+                <option value="all">All regions</option>
+              </select>
               <select id="job-filter">
                 <option value="all">All statuses</option>
                 <option value="pendingConfirmation">Pending Confirmation</option>
@@ -81,11 +84,12 @@
                 <option value="completed">Completed</option>
                 <option value="cancelled">Cancelled</option>
               </select>
-              <input id="job-search" type="search" placeholder="Search unit, address, note…">
+              <input id="job-search" type="search" placeholder="Search region, unit, note…">
             </div>
             <table>
               <thead>
                 <tr>
+                  <th>Region</th>
                   <th>Unit</th>
                   <th>Scheduled</th>
                   <th>Status</th>
@@ -116,7 +120,7 @@
             </div>
             <table>
               <thead>
-                <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Plan</th><th>Locked Rate</th><th>Alerts</th><th>Status</th><th>Joined</th></tr>
+                <tr><th>Name</th><th>Email</th><th>Role</th><th>Region</th><th>Plan</th><th>Locked Rate</th><th>Alerts</th><th>Status</th><th>Joined</th></tr>
               </thead>
               <tbody id="users-tbody"></tbody>
             </table>
@@ -172,7 +176,7 @@
             <p class="empty" style="margin-bottom:12px">Each customer's monthly/annual rate is frozen at signup.</p>
             <table>
               <thead>
-                <tr><th>Name</th><th>Unit</th><th>Signup Fee</th><th>Locked Monthly</th><th>Locked Annual</th><th>Locked Since</th></tr>
+                <tr><th>Name</th><th>Region</th><th>Signup Fee</th><th>Locked Monthly</th><th>Locked Annual</th><th>Locked Since</th></tr>
               </thead>
               <tbody id="pricing-customers-tbody"></tbody>
             </table>

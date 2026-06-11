@@ -31,7 +31,7 @@ async function onVisitRequested(customer, order) {
   });
   await pushToAdmins({
     title: 'New visit request',
-    body: `${customer.name || customer.email} · Unit ${order.unitNumber} · ${slots}`,
+    body: `${customer.name || customer.email} · ${order.region || order.unitNumber || '—'} · ${slots}`,
     type: 'visit_requested',
     orderId,
   });
@@ -58,7 +58,7 @@ async function onRedoCreated(customer, originalOrder, redoOrder) {
   });
   await pushToAdmins({
     title: 'Redo visit auto-created',
-    body: `${customer.name || customer.email} · Unit ${originalOrder.unitNumber} · pending confirmation`,
+    body: `${customer.name || customer.email} · ${originalOrder.region || originalOrder.unitNumber || '—'} · pending confirmation`,
     type: 'redo_created',
     orderId,
   });

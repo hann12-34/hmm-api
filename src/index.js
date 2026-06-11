@@ -159,12 +159,14 @@ app.get('/api/orders/:id', authMiddleware, async (req, res) => {
 app.post('/api/orders', authMiddleware, requireRole('customer', 'admin'), async (req, res) => {
   const body = req.body;
   const customerUID = req.user.role === 'admin' ? body.customerUID : req.user.uid;
+  const customer = await User.findOne({ uid: customerUID });
   const slots = body.preferredDates?.length ? body.preferredDates.map(d => new Date(d)) : [new Date()];
   const isAdmin = req.user.role === 'admin';
   const order = await WorkOrder.create({
     customerUID,
-    unitNumber: body.unitNumber || '',
-    address: body.address || '',
+    unitNumber: body.unitNumber || customer?.unitNumber || '',
+    address: body.address || customer?.address || '',
+    region: customer?.region || body.region || '',
     scheduledDate: slots[0],
     preferredDates: slots,
     customerNote: body.customerNote || '',
@@ -202,8 +204,8 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
     order.confirmedAt = null;
   } else {
     const allowed = [
-      'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
-      'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status',
+    'scheduledDate', 'preferredDates', 'customerNote', 'requestedServices',
+    'estimatedPrice', 'checklistItems', 'adminNote', 'assignedWorkerUID', 'status', 'region',
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) order[key] = req.body[key];
@@ -245,6 +247,7 @@ app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), as
         customerUID: order.customerUID,
         unitNumber: order.unitNumber,
         address: order.address,
+        region: order.region || '',
         scheduledDate: redoDate,
         preferredDates: [redoDate],
         status: 'pendingConfirmation',
@@ -453,7 +456,7 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
 });
 
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
-  const allowed = ['name', 'address', 'unitNumber', 'phoneNumber', 'notifyApp'];
+  const allowed = ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp'];
   const patch = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) {
@@ -462,6 +465,12 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, r
   }
   const user = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
   if (!user) return res.status(404).json({ error: 'Not found' });
+  if (patch.region !== undefined && user.role === 'customer') {
+    await WorkOrder.updateMany(
+      { customerUID: user.uid, status: { $nin: ['completed', 'cancelled'] } },
+      { $set: { region: patch.region } }
+    );
+  }
   res.json(user.toPublic());
 });
 

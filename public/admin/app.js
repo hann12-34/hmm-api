@@ -369,7 +369,7 @@ function renderOverview() {
   const joinRows = s.recentJoins.map(u => `
     <tr>
       <td>${userLink(u.uid, u.name || '—')}</td>
-      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${esc(u.region || '—')}</td>
       <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
       <td class="sub-active">active</td>
       <td>${fmtDate(u.createdAt)}</td>
@@ -379,7 +379,7 @@ function renderOverview() {
   const cancelRows = s.recentCancelled.map(u => `
     <tr>
       <td>${userLink(u.uid, u.name || '—')}</td>
-      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${esc(u.region || '—')}</td>
       <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
       <td class="sub-cancelled">cancelled</td>
       <td>${fmtDate(u.createdAt)}</td>
@@ -400,14 +400,14 @@ function renderOverview() {
       <div class="card">
         <h3>Recent Signups</h3>
         <table>
-          <thead><tr><th>Name</th><th>Unit</th><th>Plan</th><th>Status</th><th>Joined</th></tr></thead>
+          <thead><tr><th>Name</th><th>Region</th><th>Plan</th><th>Status</th><th>Joined</th></tr></thead>
           <tbody>${joinRows}</tbody>
         </table>
       </div>
       <div class="card">
         <h3>Cancelled Subscriptions</h3>
         <table>
-          <thead><tr><th>Name</th><th>Unit</th><th>Plan</th><th>Status</th><th>Since</th></tr></thead>
+          <thead><tr><th>Name</th><th>Region</th><th>Plan</th><th>Status</th><th>Since</th></tr></thead>
           <tbody>${cancelRows}</tbody>
         </table>
       </div>
@@ -418,25 +418,46 @@ function renderOverview() {
 
 // ── Jobs ────────────────────────────────────────────────────────────
 
+function collectRegions() {
+  const set = new Set();
+  state.orders.forEach(o => { if (o.region) set.add(o.region); });
+  state.users.filter(u => u.role === 'customer').forEach(u => { if (u.region) set.add(u.region); });
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function renderRegionFilter() {
+  const sel = $('#job-region-filter');
+  if (!sel) return;
+  const prev = sel.value;
+  const regions = collectRegions();
+  sel.innerHTML = '<option value="all">All regions</option>'
+    + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+  if (prev && (prev === 'all' || regions.includes(prev))) sel.value = prev;
+}
+
 function renderJobsTable() {
+  renderRegionFilter();
   const filter = $('#job-filter').value;
+  const regionFilter = $('#job-region-filter')?.value || 'all';
   const q = ($('#job-search').value || '').toLowerCase();
   let rows = state.orders;
   if (filter !== 'all') rows = rows.filter(o => o.status === filter);
+  if (regionFilter !== 'all') rows = rows.filter(o => o.region === regionFilter);
   if (q) rows = rows.filter(o =>
+    (o.region || '').toLowerCase().includes(q) ||
     (o.unitNumber || '').toLowerCase().includes(q) ||
-    (o.address || '').toLowerCase().includes(q) ||
     (o.customerNote || '').toLowerCase().includes(q)
   );
 
   const tbody = $('#jobs-tbody');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No jobs found.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(o => `
     <tr>
-      <td><button class="link-btn" data-id="${o.id}">Unit ${o.unitNumber || '—'}</button></td>
+      <td><strong>${esc(o.region || '—')}</strong></td>
+      <td><button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
       <td>${o.status === 'pendingConfirmation' ? 'Awaiting confirm' : fmtDate(o.scheduledDate)}</td>
       <td>${statusBadge(o.status)}</td>
       <td>${userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID))}</td>
@@ -498,6 +519,7 @@ function renderJobDetail() {
       <div>
         <div class="card">
           <h3>Job Info</h3>
+          <p><strong>Region:</strong> ${esc(o.region || '—')}</p>
           <p><strong>Unit:</strong> ${esc(o.unitNumber)}</p>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
           <p><strong>Scheduled:</strong> ${isPending ? '— (not confirmed)' : fmtDate(o.scheduledDate)}</p>
@@ -662,6 +684,7 @@ async function deleteJob(id) {
 }
 
 $('#job-filter').addEventListener('change', renderJobsTable);
+$('#job-region-filter').addEventListener('change', renderJobsTable);
 $('#job-search').addEventListener('input', renderJobsTable);
 
 // ── Users ───────────────────────────────────────────────────────────
@@ -686,7 +709,7 @@ function renderUsersTable() {
       <td>${u.role === 'admin' ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.email)}</td>
       <td>${u.role}</td>
-      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${esc(u.region || '—')}</td>
       <td>${plan}</td>
       <td>${locked}</td>
       <td>${alerts}</td>
@@ -725,6 +748,7 @@ async function renderUserDetail() {
     let profileExtra = '';
     if (u.role === 'customer') {
       profileExtra = `
+        <p><strong>Region:</strong> ${esc(u.region || '—')}</p>
         <p><strong>Unit:</strong> ${esc(u.unitNumber || '—')}</p>
         <p><strong>Address:</strong> ${esc(u.address || '—')}</p>
         <p><strong>Phone:</strong> ${esc(u.phoneNumber || '—')}</p>
@@ -740,7 +764,8 @@ async function renderUserDetail() {
 
     const orderRows = orders.map(o => `
       <tr>
-        <td><button class="link-btn" data-id="${o.id}">Unit ${esc(o.unitNumber || '—')}</button></td>
+        <td>${esc(o.region || '—')}</td>
+        <td><button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
         <td>${fmtDate(o.scheduledDate)}</td>
         <td>${statusBadge(o.status)}</td>
         <td>${(o.requestedServices || []).join(', ') || '—'}</td>
@@ -748,7 +773,7 @@ async function renderUserDetail() {
         <td>${u.role === 'customer' ? userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID)) : userLink(o.customerUID, userName(o.customerUID))}</td>
         <td>${o.completedAt ? fmtDate(o.completedAt) : '—'}</td>
       </tr>
-    `).join('') || `<tr><td colspan="7" class="empty">No ${u.role === 'worker' ? 'jobs assigned' : 'service requests'} yet.</td></tr>`;
+    `).join('') || `<tr><td colspan="8" class="empty">No ${u.role === 'worker' ? 'jobs assigned' : 'service requests'} yet.</td></tr>`;
 
     const paymentRows = payments.map(p => `
       <tr>
@@ -762,8 +787,8 @@ async function renderUserDetail() {
 
     const orderTitle = u.role === 'worker' ? 'Job History' : 'Service Requests';
     const orderHeaders = u.role === 'worker'
-      ? '<th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Customer</th><th>Completed</th>'
-      : '<th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Worker</th><th>Completed</th>';
+      ? '<th>Region</th><th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Customer</th><th>Completed</th>'
+      : '<th>Region</th><th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Worker</th><th>Completed</th>';
 
     el.innerHTML = `
       <div class="card" style="margin-bottom:20px">
@@ -774,6 +799,7 @@ async function renderUserDetail() {
         ${profileExtra}
         ${u.role === 'customer' ? `
         <form id="admin-user-form" style="margin-top:16px">
+          <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
           <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
           <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
           <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
@@ -783,7 +809,7 @@ async function renderUserDetail() {
           </div>
           <button type="submit" class="btn btn-primary">Save Customer Info</button>
         </form>
-        <p class="empty" style="margin-top:8px">Address changes are admin-only to prevent account sharing.</p>
+        <p class="empty" style="margin-top:8px">Set region (e.g. Lougheed, Gastown) for job filtering and worker batching. Address is admin-only.</p>
         ` : ''}
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -814,6 +840,7 @@ async function renderUserDetail() {
         e.preventDefault();
         try {
           await api('PATCH', `/users/${uid}`, {
+            region: $('#u-region').value.trim(),
             address: $('#u-address').value.trim(),
             unitNumber: $('#u-unit').value.trim(),
             phoneNumber: $('#u-phone').value.trim(),
@@ -868,7 +895,7 @@ function renderPricing() {
   tbody.innerHTML = customers.map(u => `
     <tr>
       <td>${userLink(u.uid, u.name || '—')}</td>
-      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${esc(u.region || '—')}</td>
       <td>${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0}` : '—'}</td>
       <td>$${u.lockedMonthlyPrice ?? '—'}/mo</td>
       <td>$${u.lockedAnnualPrice ?? '—'}/yr</td>
