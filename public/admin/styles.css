@@ -96,25 +96,6 @@ input:focus, select:focus, textarea:focus {
   color: var(--gold);
   font-weight: 600;
 }
-.sidebar-stats {
-  margin: 0 12px 16px;
-  padding: 12px;
-  background: #111;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 0.72rem;
-  line-height: 1.6;
-}
-.sidebar-stats .stat-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--muted);
-}
-.sidebar-stats .stat-line strong { color: var(--text); }
-.sidebar-stats .stat-line.ok strong { color: var(--ok); }
-.sidebar-stats .stat-line.warn strong { color: var(--gold); }
-.sidebar-stats .stat-line.bad strong { color: #f87171; }
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

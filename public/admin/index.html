@@ -32,7 +32,6 @@
   <div id="app-view" class="shell hidden">
     <aside class="sidebar">
       <div class="brand">HMM ADMIN</div>
-      <div id="sidebar-stats" class="sidebar-stats"></div>
       <button class="nav-btn active" data-tab="overview">Overview</button>
       <button class="nav-btn" data-tab="jobs">Jobs</button>
       <button class="nav-btn" data-tab="users">Users</button>
@@ -91,20 +90,26 @@
 
         <!-- Users -->
         <section id="tab-users" class="tab-panel hidden">
-          <div class="toolbar">
-            <select id="user-filter">
-              <option value="all">All roles</option>
-              <option value="customer">Customers</option>
-              <option value="worker">Workers</option>
-              <option value="admin">Admins</option>
-            </select>
+          <div id="users-list-panel">
+            <div class="toolbar">
+              <select id="user-filter">
+                <option value="all">All roles</option>
+                <option value="customer">Customers</option>
+                <option value="worker">Workers</option>
+                <option value="admin">Admins</option>
+              </select>
+            </div>
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Plan</th><th>Locked Rate</th><th>Status</th><th>Joined</th></tr>
+              </thead>
+              <tbody id="users-tbody"></tbody>
+            </table>
           </div>
-          <table>
-            <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Plan</th><th>Locked Rate</th><th>Status</th><th>Joined</th></tr>
-            </thead>
-            <tbody id="users-tbody"></tbody>
-          </table>
+          <div id="user-detail-panel" class="hidden">
+            <button id="back-users" class="btn btn-ghost" style="margin-bottom:16px">← All Users</button>
+            <div id="user-detail"></div>
+          </div>
         </section>
 
         <!-- Services -->

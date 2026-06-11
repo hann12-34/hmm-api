@@ -352,6 +352,34 @@ app.get('/api/admin/users', authMiddleware, requireRole('admin'), async (_, res)
   res.json(users.map(u => u.toPublic()));
 });
 
+app.get('/api/admin/users/:uid/history', authMiddleware, requireRole('admin'), async (req, res) => {
+  const user = await User.findOne({ uid: req.params.uid });
+  if (!user) return res.status(404).json({ error: 'Not found' });
+
+  let orders = [];
+  let payments = [];
+  if (user.role === 'customer') {
+    orders = await WorkOrder.find({ customerUID: user.uid }).sort({ scheduledDate: -1 });
+    payments = await Payment.find({ customerUID: user.uid }).sort({ date: -1 });
+  } else if (user.role === 'worker') {
+    orders = await WorkOrder.find({ assignedWorkerUID: user.uid }).sort({ scheduledDate: -1 });
+  }
+
+  res.json({
+    user: user.toPublic(),
+    orders: orders.map(orderToJSON),
+    payments: payments.map(p => ({
+      id: p._id.toString(),
+      date: p.date,
+      amount: p.amount,
+      plan: p.plan,
+      status: p.status,
+      note: p.note,
+      cardLast4: p.cardLast4,
+    })),
+  });
+});
+
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
   const user = await User.findOneAndUpdate({ uid: req.params.uid }, req.body, { new: true });
   if (!user) return res.status(404).json({ error: 'Not found' });

@@ -8,6 +8,7 @@ let state = {
   services: [],
   pricing: null,
   selectedOrderId: null,
+  selectedUserUid: null,
   pollTimer: null,
 };
 
@@ -65,6 +66,36 @@ function photoImg(url) {
 function userName(uid) {
   const u = state.users.find(x => x.uid === uid);
   return u ? (u.name || u.email) : '—';
+}
+
+function userLink(uid, label) {
+  if (!uid) return esc(label || '—');
+  const u = state.users.find(x => x.uid === uid);
+  if (!u || u.role === 'admin') return esc(label || u?.name || '—');
+  const text = label || u.name || u.email;
+  return `<button type="button" class="link-btn" data-user="${uid}">${esc(text)}</button>`;
+}
+
+function wireUserLinks(root) {
+  (root || document).querySelectorAll('[data-user]').forEach(btn => {
+    btn.addEventListener('click', () => openUser(btn.dataset.user));
+  });
+}
+
+function switchTab(tab) {
+  $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.tab-panel').forEach(p => p.classList.add('hidden'));
+  $(`#tab-${tab}`).classList.remove('hidden');
+  const activeBtn = [...$$('.nav-btn')].find(b => b.dataset.tab === tab);
+  $('#page-title').textContent = activeBtn ? activeBtn.textContent.trim() : tab;
+}
+
+async function openUser(uid) {
+  state.selectedUserUid = uid;
+  switchTab('users');
+  $('#users-list-panel').classList.add('hidden');
+  $('#user-detail-panel').classList.remove('hidden');
+  await renderUserDetail();
 }
 
 function taskTemplateOptions() {
@@ -129,14 +160,28 @@ $('#logout-btn').addEventListener('click', logout);
 
 $$('.nav-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    $$('.nav-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const tab = btn.dataset.tab;
-    $$('.tab-panel').forEach(p => p.classList.add('hidden'));
-    $(`#tab-${tab}`).classList.remove('hidden');
-    $('#page-title').textContent = btn.textContent.trim();
-    if (tab === 'jobs' && state.selectedOrderId) renderJobDetail();
-    if (tab === 'pricing') renderPricing();
+    switchTab(btn.dataset.tab);
+    if (btn.dataset.tab === 'jobs') {
+      if (state.selectedOrderId) {
+        $('#jobs-list-panel').classList.add('hidden');
+        $('#job-detail-panel').classList.remove('hidden');
+        renderJobDetail();
+      } else {
+        $('#jobs-list-panel').classList.remove('hidden');
+        $('#job-detail-panel').classList.add('hidden');
+      }
+    }
+    if (btn.dataset.tab === 'users') {
+      if (state.selectedUserUid) {
+        $('#users-list-panel').classList.add('hidden');
+        $('#user-detail-panel').classList.remove('hidden');
+        renderUserDetail();
+      } else {
+        $('#users-list-panel').classList.remove('hidden');
+        $('#user-detail-panel').classList.add('hidden');
+      }
+    }
+    if (btn.dataset.tab === 'pricing') renderPricing();
   });
 });
 
@@ -153,13 +198,13 @@ async function refreshAll() {
   state.users = users;
   state.services = services;
   state.pricing = pricing;
-  renderSidebarStats();
   renderOverview();
   renderJobsTable();
   renderUsersTable();
   renderServicesTable();
   renderPricing();
   if (state.selectedOrderId) renderJobDetail();
+  if (state.selectedUserUid) renderUserDetail();
 }
 
 // ── Overview / Stats ────────────────────────────────────────────────
@@ -182,22 +227,11 @@ function computeStats() {
   return { customers, active, cancelled, newMembers, openJobs, workers, recentJoins, recentCancelled };
 }
 
-function renderSidebarStats() {
-  const s = computeStats();
-  $('#sidebar-stats').innerHTML = `
-    <div class="stat-line ok"><span>Active subs</span><strong>${s.active.length}</strong></div>
-    <div class="stat-line bad"><span>Cancelled</span><strong>${s.cancelled.length}</strong></div>
-    <div class="stat-line warn"><span>New (30d)</span><strong>${s.newMembers.length}</strong></div>
-    <div class="stat-line"><span>Open jobs</span><strong>${s.openJobs.length}</strong></div>
-    <div class="stat-line"><span>Workers</span><strong>${s.workers.length}</strong></div>
-  `;
-}
-
 function renderOverview() {
   const s = computeStats();
   const joinRows = s.recentJoins.map(u => `
     <tr>
-      <td>${esc(u.name || '—')}</td>
+      <td>${userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.unitNumber || '—')}</td>
       <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
       <td class="sub-active">active</td>
@@ -207,7 +241,7 @@ function renderOverview() {
 
   const cancelRows = s.recentCancelled.map(u => `
     <tr>
-      <td>${esc(u.name || '—')}</td>
+      <td>${userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.unitNumber || '—')}</td>
       <td>${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</td>
       <td class="sub-cancelled">cancelled</td>
@@ -241,6 +275,7 @@ function renderOverview() {
       </div>
     </div>
   `;
+  wireUserLinks($('#overview-content'));
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────
@@ -266,19 +301,21 @@ function renderJobsTable() {
       <td><button class="link-btn" data-id="${o.id}">Unit ${o.unitNumber || '—'}</button></td>
       <td>${fmtDate(o.scheduledDate)}</td>
       <td>${statusBadge(o.status)}</td>
-      <td>${userName(o.assignedWorkerUID)}</td>
+      <td>${userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID))}</td>
       <td>${(o.requestedServices || []).join(', ') || '—'}</td>
       <td>$${o.estimatedPrice || 0}</td>
     </tr>
   `).join('');
 
-  tbody.querySelectorAll('.link-btn').forEach(btn => {
+  tbody.querySelectorAll('.link-btn[data-id]').forEach(btn => {
     btn.addEventListener('click', () => openJob(btn.dataset.id));
   });
+  wireUserLinks(tbody);
 }
 
 function openJob(id) {
   state.selectedOrderId = id;
+  switchTab('jobs');
   $('#jobs-list-panel').classList.add('hidden');
   $('#job-detail-panel').classList.remove('hidden');
   renderJobDetail();
@@ -326,7 +363,7 @@ function renderJobDetail() {
           <p><strong>Unit:</strong> ${esc(o.unitNumber)}</p>
           <p><strong>Address:</strong> ${esc(o.address)}</p>
           <p><strong>Scheduled:</strong> ${fmtDate(o.scheduledDate)}</p>
-          <p><strong>Customer:</strong> ${userName(o.customerUID)}</p>
+          <p><strong>Customer:</strong> ${userLink(o.customerUID, userName(o.customerUID))}</p>
           <p><strong>Services:</strong> ${(o.requestedServices || []).join(', ') || '—'}</p>
           <p><strong>Price:</strong> $${o.estimatedPrice || 0}</p>
           <div class="field" style="margin-top:12px">
@@ -419,6 +456,8 @@ function renderJobDetail() {
     toast('Task added — click Save Changes');
   });
 
+  wireUserLinks(el);
+
   $('#save-job').addEventListener('click', () => saveJob(o.id));
   $('#delete-job').addEventListener('click', () => deleteJob(o.id));
 }
@@ -479,7 +518,7 @@ function renderUsersTable() {
       : '—';
     return `
     <tr>
-      <td>${esc(u.name || '—')}</td>
+      <td>${u.role === 'admin' ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.email)}</td>
       <td>${u.role}</td>
       <td>${esc(u.unitNumber || '—')}</td>
@@ -489,9 +528,116 @@ function renderUsersTable() {
       <td>${fmtDate(u.createdAt)}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="8" class="empty">No users.</td></tr>';
+  wireUserLinks(tbody);
 }
 
 $('#user-filter').addEventListener('change', renderUsersTable);
+
+$('#back-users').addEventListener('click', () => {
+  state.selectedUserUid = null;
+  $('#user-detail-panel').classList.add('hidden');
+  $('#users-list-panel').classList.remove('hidden');
+});
+
+function planLabel(plan) {
+  if (plan === 'signup_fee') return 'Signup Fee';
+  if (plan === 'annual') return 'Annual';
+  if (plan === 'monthly') return 'Monthly';
+  return plan || '—';
+}
+
+async function renderUserDetail() {
+  const el = $('#user-detail');
+  const uid = state.selectedUserUid;
+  if (!uid) return;
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const data = await api('GET', `/admin/users/${uid}/history`);
+    const u = data.user;
+    const orders = data.orders || [];
+    const payments = data.payments || [];
+
+    const subClass = u.subscriptionStatus === 'cancelled' ? 'sub-cancelled'
+      : u.subscriptionStatus === 'active' ? 'sub-active' : '';
+
+    let profileExtra = '';
+    if (u.role === 'customer') {
+      profileExtra = `
+        <p><strong>Unit:</strong> ${esc(u.unitNumber || '—')}</p>
+        <p><strong>Address:</strong> ${esc(u.address || '—')}</p>
+        <p><strong>Phone:</strong> ${esc(u.phoneNumber || '—')}</p>
+        <p><strong>Plan:</strong> ${u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly'}</p>
+        <p><strong>Locked Rate:</strong> $${u.planAmount ?? u.lockedMonthlyPrice ?? '—'}</p>
+        <p><strong>Subscription:</strong> <span class="${subClass}">${u.subscriptionStatus || '—'}</span></p>
+        <p><strong>Renewal:</strong> ${fmtDate(u.renewalDate)}</p>
+        <p><strong>Signup Fee:</strong> ${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0} paid` : '—'}</p>
+        <p><strong>Card:</strong> ${u.cardBrand && u.cardLast4 ? `${u.cardBrand} •••• ${u.cardLast4}` : '—'}</p>
+      `;
+    }
+
+    const orderRows = orders.map(o => `
+      <tr>
+        <td><button class="link-btn" data-id="${o.id}">Unit ${esc(o.unitNumber || '—')}</button></td>
+        <td>${fmtDate(o.scheduledDate)}</td>
+        <td>${statusBadge(o.status)}</td>
+        <td>${(o.requestedServices || []).join(', ') || '—'}</td>
+        <td>$${o.estimatedPrice || 0}</td>
+        <td>${u.role === 'customer' ? userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID)) : userLink(o.customerUID, userName(o.customerUID))}</td>
+        <td>${o.completedAt ? fmtDate(o.completedAt) : '—'}</td>
+      </tr>
+    `).join('') || `<tr><td colspan="7" class="empty">No ${u.role === 'worker' ? 'jobs assigned' : 'service requests'} yet.</td></tr>`;
+
+    const paymentRows = payments.map(p => `
+      <tr>
+        <td>${fmtDate(p.date)}</td>
+        <td>$${p.amount ?? 0}</td>
+        <td>${planLabel(p.plan)}</td>
+        <td class="${p.status === 'paid' ? 'sub-active' : ''}">${p.status || '—'}</td>
+        <td>${esc(p.note || '—')}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="empty">No payments yet.</td></tr>';
+
+    const orderTitle = u.role === 'worker' ? 'Job History' : 'Service Requests';
+    const orderHeaders = u.role === 'worker'
+      ? '<th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Customer</th><th>Completed</th>'
+      : '<th>Unit</th><th>Scheduled</th><th>Status</th><th>Services</th><th>Price</th><th>Worker</th><th>Completed</th>';
+
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:20px">
+        <h3>${esc(u.name || u.email)}</h3>
+        <p><strong>Email:</strong> ${esc(u.email)}</p>
+        <p><strong>Role:</strong> ${u.role}</p>
+        <p><strong>Joined:</strong> ${fmtDate(u.createdAt)}</p>
+        ${profileExtra}
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3>${orderTitle} (${orders.length})</h3>
+        <table>
+          <thead><tr>${orderHeaders}</tr></thead>
+          <tbody>${orderRows}</tbody>
+        </table>
+      </div>
+      ${u.role === 'customer' ? `
+      <div class="card">
+        <h3>Payment History (${payments.length})</h3>
+        <table>
+          <thead><tr><th>Date</th><th>Amount</th><th>Type</th><th>Status</th><th>Note</th></tr></thead>
+          <tbody>${paymentRows}</tbody>
+        </table>
+      </div>` : ''}
+    `;
+
+    el.querySelectorAll('.link-btn[data-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        switchTab('jobs');
+        openJob(btn.dataset.id);
+      });
+    });
+    wireUserLinks(el);
+  } catch (ex) {
+    el.innerHTML = `<p class="empty">${esc(ex.message)}</p>`;
+  }
+}
 
 // ── Services ────────────────────────────────────────────────────────
 
@@ -531,7 +677,7 @@ function renderPricing() {
   const tbody = $('#pricing-customers-tbody');
   tbody.innerHTML = customers.map(u => `
     <tr>
-      <td>${esc(u.name || '—')}</td>
+      <td>${userLink(u.uid, u.name || '—')}</td>
       <td>${esc(u.unitNumber || '—')}</td>
       <td>${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0}` : '—'}</td>
       <td>$${u.lockedMonthlyPrice ?? '—'}/mo</td>
@@ -539,6 +685,7 @@ function renderPricing() {
       <td>${fmtDate(u.pricingLockedAt || u.createdAt)}</td>
     </tr>
   `).join('') || '<tr><td colspan="6" class="empty">No customers yet.</td></tr>';
+  wireUserLinks(tbody);
 }
 
 $('#pricing-form').addEventListener('submit', async (e) => {
