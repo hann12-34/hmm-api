@@ -448,6 +448,36 @@ function pendingUnableRequests(order) {
   return (order?.unableToAttendRequests || []).filter(r => r.status === 'pending');
 }
 
+const STATUS_LABELS = {
+  pendingConfirmation: 'Awaiting Confirm',
+  scheduled: 'Scheduled',
+  inProgress: 'In Progress',
+  paused: 'Paused',
+  needsRevisit: 'Needs Revisit',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+};
+
+function friendlyStatus(status) {
+  return STATUS_LABELS[status] || status || '—';
+}
+
+function formatAuditSummary(a) {
+  let text = a.summary || '—';
+  const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  text = text.replace(uuidRe, (uid) => {
+    const u = state.users.find(x => x.uid === uid);
+    return u ? (u.name || u.email) : uid;
+  });
+  text = text.replace(/status (\w+) → (\w+)/g, (_, from, to) =>
+    `status ${friendlyStatus(from)} → ${friendlyStatus(to)}`
+  );
+  if (text === 'schedule updated' && a.details?.after?.scheduledDate) {
+    text = `schedule → ${fmtDate(a.details.after.scheduledDate)}`;
+  }
+  return text;
+}
+
 function jobAuditLabel(action) {
   const labels = {
     'order.start': 'Started',
@@ -485,7 +515,7 @@ function jobActivityRows() {
         <td>${esc(who)}</td>
         <td><span class="activity-label">${esc(jobAuditLabel(a.action))}</span></td>
         <td>${status ? statusBadge(status) : '—'}</td>
-        <td>${esc(a.summary || '—')}</td>
+        <td>${esc(formatAuditSummary(a))}</td>
         <td>${a.targetId ? `<button type="button" class="link-btn" data-activity-job="${a.targetId}">${esc(unit)}</button>` : '—'}</td>
       </tr>
     `;
@@ -1119,7 +1149,7 @@ function renderAuditLog() {
       <td>${fmtDate(a.createdAt)}</td>
       <td>${esc(a.actorEmail || a.actorUID)} <span class="empty">(${esc(a.actorRole)})</span></td>
       <td>${esc(a.action)}</td>
-      <td>${esc(a.summary)}</td>
+      <td>${esc(formatAuditSummary(a))}</td>
     </tr>
   `).join('') || '<tr><td colspan="4" class="empty">No activity yet.</td></tr>';
 }

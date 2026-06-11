@@ -46,6 +46,12 @@ function orderForRole(doc, role) {
   return o;
 }
 
+async function staffLabel(uid) {
+  if (!uid) return 'Unassigned';
+  const u = await User.findOne({ uid });
+  return u ? (u.name || u.email) : uid;
+}
+
 async function logOrderAudit(actor, order, action, summary, details = {}) {
   await logAudit({
     actor,
@@ -272,11 +278,19 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
   await order.save();
   if (isStaffRole(req.user.role)) {
     const changes = [];
-    if (before.status !== order.status) changes.push(`status ${before.status} → ${order.status}`);
-    if (before.assignedWorkerUID !== order.assignedWorkerUID) {
-      changes.push(`worker ${before.assignedWorkerUID || '—'} → ${order.assignedWorkerUID || '—'}`);
+    if (before.status !== order.status) {
+      changes.push(`status ${before.status} → ${order.status}`);
     }
-    if (String(before.scheduledDate) !== String(order.scheduledDate)) changes.push('schedule updated');
+    if (before.assignedWorkerUID !== order.assignedWorkerUID) {
+      const [fromWorker, toWorker] = await Promise.all([
+        staffLabel(before.assignedWorkerUID),
+        staffLabel(order.assignedWorkerUID),
+      ]);
+      changes.push(`worker ${fromWorker} → ${toWorker}`);
+    }
+    if (String(before.scheduledDate) !== String(order.scheduledDate)) {
+      changes.push(`schedule → ${new Date(order.scheduledDate).toLocaleString()}`);
+    }
     if (changes.length) {
       await logAudit({
         actor: req.user,
@@ -284,7 +298,14 @@ app.patch('/api/orders/:id', authMiddleware, async (req, res) => {
         targetType: 'order',
         targetId: order._id.toString(),
         summary: changes.join('; '),
-        details: { before, after: { status: order.status, assignedWorkerUID: order.assignedWorkerUID } },
+        details: {
+          before,
+          after: {
+            status: order.status,
+            assignedWorkerUID: order.assignedWorkerUID,
+            scheduledDate: order.scheduledDate,
+          },
+        },
       });
     }
   }
