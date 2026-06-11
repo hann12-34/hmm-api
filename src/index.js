@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -12,6 +13,11 @@ const app = express();
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '15mb' }));
+
+// ── Admin web (static) ──────────────────────────────────────────────
+const adminDir = path.join(__dirname, '../public/admin');
+app.use('/admin', express.static(adminDir));
+app.get('/admin', (_, res) => res.sendFile(path.join(adminDir, 'index.html')));
 
 // ── Health ──────────────────────────────────────────────────────────
 app.get('/health', (_, res) => res.json({ ok: true, service: 'hmm-api' }));
@@ -397,12 +403,35 @@ app.delete('/api/orders/:id', authMiddleware, requireRole('admin'), async (req, 
 });
 
 // ── Start ───────────────────────────────────────────────────────────
-mongoose.connect(process.env.MONGODB_URI)
+if (!process.env.MONGODB_URI) {
+  console.error('FATAL: MONGODB_URI env var is missing');
+  process.exit(1);
+}
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET env var is missing');
+  process.exit(1);
+}
+
+async function connectMongo(retries = 5) {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
+      console.log('MongoDB connected (hmm-api)');
+      return;
+    } catch (err) {
+      console.error(`MongoDB attempt ${i}/${retries} failed:`, err.message);
+      if (i === retries) throw err;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
+connectMongo()
   .then(() => {
-    console.log('MongoDB connected (hmm-api)');
-    app.listen(PORT, () => console.log(`hmm-api listening on :${PORT}`));
+    app.listen(PORT, '0.0.0.0', () => console.log(`hmm-api listening on :${PORT}`));
   })
   .catch(err => {
     console.error('MongoDB connection failed:', err.message);
+    console.error('Check: MONGODB_URI correct? Atlas Network Access allows 0.0.0.0/0?');
     process.exit(1);
   });

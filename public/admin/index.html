@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HMM Admin</title>
+  <link rel="stylesheet" href="/admin/styles.css">
+</head>
+<body>
+
+  <!-- Login -->
+  <div id="login-view" class="login-wrap">
+    <div class="login-card">
+      <h1>HOME MICRO MAINTENANCE</h1>
+      <p>Admin Dashboard</p>
+      <form id="login-form">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" required placeholder="admin@hmm.com" autocomplete="username">
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" required placeholder="Password" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary">Sign In</button>
+        <p id="login-error" class="error"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app-view" class="shell hidden">
+    <aside class="sidebar">
+      <div class="brand">HMM ADMIN</div>
+      <button class="nav-btn active" data-tab="jobs">Jobs</button>
+      <button class="nav-btn" data-tab="users">Users</button>
+      <button class="nav-btn" data-tab="services">Services</button>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <h2 id="page-title">Jobs</h2>
+        <div>
+          <span id="admin-name" style="color:var(--muted);margin-right:12px;font-size:0.9rem"></span>
+          <button id="logout-btn" class="btn btn-ghost">Sign Out</button>
+        </div>
+      </header>
+      <div class="content">
+
+        <!-- Jobs -->
+        <section id="tab-jobs" class="tab-panel">
+          <div id="jobs-list-panel">
+            <div class="toolbar">
+              <select id="job-filter">
+                <option value="all">All statuses</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="inProgress">In Progress</option>
+                <option value="paused">Paused</option>
+                <option value="needsRevisit">Needs Revisit</option>
+                <option value="completed">Completed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <input id="job-search" type="search" placeholder="Search unit, address, note…">
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Unit</th>
+                  <th>Scheduled</th>
+                  <th>Status</th>
+                  <th>Worker</th>
+                  <th>Services</th>
+                  <th>Price</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-tbody"></tbody>
+            </table>
+          </div>
+          <div id="job-detail-panel" class="hidden">
+            <button id="back-jobs" class="btn btn-ghost" style="margin-bottom:16px">← All Jobs</button>
+            <div id="job-detail"></div>
+          </div>
+        </section>
+
+        <!-- Users -->
+        <section id="tab-users" class="tab-panel hidden">
+          <div class="toolbar">
+            <select id="user-filter">
+              <option value="all">All roles</option>
+              <option value="customer">Customers</option>
+              <option value="worker">Workers</option>
+              <option value="admin">Admins</option>
+            </select>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>Unit</th><th>Subscription</th></tr>
+            </thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </section>
+
+        <!-- Services -->
+        <section id="tab-services" class="tab-panel hidden">
+          <div class="card" style="max-width:480px">
+            <h3>Add Service</h3>
+            <form id="add-service-form">
+              <div class="field"><label>Name</label><input id="svc-name" required></div>
+              <div class="field"><label>Price ($)</label><input id="svc-price" type="number" min="0" step="1" value="0"></div>
+              <div class="field"><label>Sort Order</label><input id="svc-order" type="number" value="0"></div>
+              <button type="submit" class="btn btn-primary">Add Service</button>
+            </form>
+          </div>
+          <table style="margin-top:20px">
+            <thead><tr><th>Name</th><th>Price</th><th>Order</th><th></th></tr></thead>
+            <tbody id="services-tbody"></tbody>
+          </table>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/admin/app.js"></script>
+</body>
+</html>
