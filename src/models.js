@@ -14,6 +14,11 @@ const userSchema = new mongoose.Schema({
   renewalDate: Date,
   cardBrand: String,
   cardLast4: String,
+  signupFeePaid: { type: Boolean, default: false },
+  signupFeeAmount: { type: Number, default: 0 },
+  lockedMonthlyPrice: { type: Number },
+  lockedAnnualPrice: { type: Number },
+  pricingLockedAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -82,13 +87,21 @@ const serviceTypeSchema = new mongoose.Schema({
   sortOrder: { type: Number, default: 0 },
 });
 
+const pricingConfigSchema = new mongoose.Schema({
+  key: { type: String, unique: true, default: 'default' },
+  signupFee: { type: Number, default: 99 },
+  monthlyPriceNew: { type: Number, default: 99 },
+  annualPriceNew: { type: Number, default: 990 },
+}, { timestamps: true });
+
 userSchema.methods.toPublic = function () {
+  const { enrichUserPublic } = require('./pricing');
   const o = this.toObject();
   delete o.passwordHash;
   delete o.__v;
   o.id = o._id.toString();
   delete o._id;
-  return o;
+  return enrichUserPublic(o);
 };
 
 function orderToJSON(doc) {
@@ -106,5 +119,6 @@ module.exports = {
   WorkOrder: mongoose.model('WorkOrder', workOrderSchema),
   Payment: mongoose.model('Payment', paymentSchema),
   ServiceType: mongoose.model('ServiceType', serviceTypeSchema),
+  PricingConfig: mongoose.model('PricingConfig', pricingConfigSchema),
   orderToJSON,
 };

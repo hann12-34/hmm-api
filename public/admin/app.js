@@ -6,6 +6,7 @@ let state = {
   orders: [],
   users: [],
   services: [],
+  pricing: null,
   selectedOrderId: null,
   pollTimer: null,
 };
@@ -135,25 +136,29 @@ $$('.nav-btn').forEach(btn => {
     $(`#tab-${tab}`).classList.remove('hidden');
     $('#page-title').textContent = btn.textContent.trim();
     if (tab === 'jobs' && state.selectedOrderId) renderJobDetail();
+    if (tab === 'pricing') renderPricing();
   });
 });
 
 // ── Data ────────────────────────────────────────────────────────────
 
 async function refreshAll() {
-  const [orders, users, services] = await Promise.all([
+  const [orders, users, services, pricing] = await Promise.all([
     api('GET', '/orders'),
     api('GET', '/admin/users'),
     api('GET', '/services'),
+    api('GET', '/admin/pricing'),
   ]);
   state.orders = orders;
   state.users = users;
   state.services = services;
+  state.pricing = pricing;
   renderSidebarStats();
   renderOverview();
   renderJobsTable();
   renderUsersTable();
   renderServicesTable();
+  renderPricing();
   if (state.selectedOrderId) renderJobDetail();
 }
 
@@ -467,7 +472,10 @@ function renderUsersTable() {
     const subClass = u.subscriptionStatus === 'cancelled' ? 'sub-cancelled'
       : u.subscriptionStatus === 'active' ? 'sub-active' : '';
     const plan = u.role === 'customer'
-      ? (u.subscriptionPlan === 'annual' ? 'Annual ($990)' : 'Monthly ($99)')
+      ? (u.subscriptionPlan === 'annual' ? 'Annual' : 'Monthly')
+      : '—';
+    const locked = u.role === 'customer'
+      ? `$${u.planAmount ?? (u.subscriptionPlan === 'annual' ? u.lockedAnnualPrice : u.lockedMonthlyPrice) ?? '—'}`
       : '—';
     return `
     <tr>
@@ -476,10 +484,11 @@ function renderUsersTable() {
       <td>${u.role}</td>
       <td>${esc(u.unitNumber || '—')}</td>
       <td>${plan}</td>
+      <td>${locked}</td>
       <td class="${subClass}">${u.subscriptionStatus || '—'}</td>
       <td>${fmtDate(u.createdAt)}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" class="empty">No users.</td></tr>';
+  }).join('') || '<tr><td colspan="8" class="empty">No users.</td></tr>';
 }
 
 $('#user-filter').addEventListener('change', renderUsersTable);
@@ -508,6 +517,43 @@ function renderServicesTable() {
     });
   });
 }
+
+// ── Pricing ─────────────────────────────────────────────────────────
+
+function renderPricing() {
+  const p = state.pricing;
+  if (!p) return;
+  $('#price-signup').value = p.signupFee ?? 99;
+  $('#price-monthly').value = p.monthlyPriceNew ?? 99;
+  $('#price-annual').value = p.annualPriceNew ?? 990;
+
+  const customers = state.users.filter(u => u.role === 'customer');
+  const tbody = $('#pricing-customers-tbody');
+  tbody.innerHTML = customers.map(u => `
+    <tr>
+      <td>${esc(u.name || '—')}</td>
+      <td>${esc(u.unitNumber || '—')}</td>
+      <td>${u.signupFeePaid ? `$${u.signupFeeAmount ?? 0}` : '—'}</td>
+      <td>$${u.lockedMonthlyPrice ?? '—'}/mo</td>
+      <td>$${u.lockedAnnualPrice ?? '—'}/yr</td>
+      <td>${fmtDate(u.pricingLockedAt || u.createdAt)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="empty">No customers yet.</td></tr>';
+}
+
+$('#pricing-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const res = await api('PATCH', '/admin/pricing', {
+      signupFee: Number($('#price-signup').value),
+      monthlyPriceNew: Number($('#price-monthly').value),
+      annualPriceNew: Number($('#price-annual').value),
+    });
+    state.pricing = res;
+    renderPricing();
+    toast(res.message || 'Pricing saved');
+  } catch (ex) { toast(ex.message); }
+});
 
 $('#add-service-form').addEventListener('submit', async (e) => {
   e.preventDefault();

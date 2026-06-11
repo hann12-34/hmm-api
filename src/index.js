@@ -7,6 +7,13 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { User, WorkOrder, Payment, ServiceType, orderToJSON } = require('./models');
 const { signToken, authMiddleware, requireRole } = require('./auth');
+const {
+  getPricingConfig,
+  updatePricingConfig,
+  lockedPricesFromConfig,
+  billAmountForUser,
+  migrateLegacyPricing,
+} = require('./pricing');
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -37,6 +44,8 @@ app.post('/api/auth/signup', async (req, res) => {
     const plan = 'monthly';
     const renewal = new Date();
     renewal.setMonth(renewal.getMonth() + 1);
+    const pricing = await getPricingConfig();
+    const locked = userRole === 'customer' ? lockedPricesFromConfig(pricing) : {};
     const user = await User.create({
       uid,
       email: email.toLowerCase(),
@@ -49,14 +58,23 @@ app.post('/api/auth/signup', async (req, res) => {
       subscriptionStatus: 'active',
       subscriptionPlan: plan,
       renewalDate: userRole === 'customer' ? renewal : null,
+      signupFeePaid: userRole === 'customer',
+      ...locked,
     });
     if (userRole === 'customer') {
       await Payment.create({
         customerUID: uid,
-        amount: 99,
-        plan,
+        amount: pricing.signupFee,
+        plan: 'signup_fee',
         status: 'paid',
-        note: 'Subscription started (Monthly)',
+        note: 'One-time signup fee',
+      });
+      await Payment.create({
+        customerUID: uid,
+        amount: locked.lockedMonthlyPrice,
+        plan: 'monthly',
+        status: 'paid',
+        note: `First month (locked rate $${locked.lockedMonthlyPrice}/mo)`,
       });
     }
     const token = signToken(user);
@@ -84,6 +102,11 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   const user = await User.findOne({ uid: req.user.uid });
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user: user.toPublic() });
+});
+
+// ── Pricing (public for signup screen) ─────────────────────────────
+app.get('/api/pricing', async (_, res) => {
+  res.json(await getPricingConfig());
 });
 
 // ── Services (catalog) ────────────────────────────────────────────
@@ -351,21 +374,23 @@ app.patch('/api/users/me/payment-method', authMiddleware, requireRole('customer'
 
 app.patch('/api/users/me/plan', authMiddleware, requireRole('customer'), async (req, res) => {
   const plan = req.body.plan;
+  const user = await User.findOne({ uid: req.user.uid });
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  const amount = billAmountForUser(user, plan);
   const renewal = new Date();
   if (plan === 'annual') renewal.setFullYear(renewal.getFullYear() + 1);
   else renewal.setMonth(renewal.getMonth() + 1);
-  const user = await User.findOneAndUpdate({ uid: req.user.uid }, {
-    subscriptionPlan: plan,
-    renewalDate: renewal,
-    subscriptionStatus: 'active',
-  }, { new: true });
+  user.subscriptionPlan = plan;
+  user.renewalDate = renewal;
+  user.subscriptionStatus = 'active';
+  await user.save();
   await Payment.create({
     customerUID: req.user.uid,
-    amount: plan === 'annual' ? 990 : 99,
+    amount,
     plan,
     status: 'paid',
     cardLast4: user.cardLast4,
-    note: `Plan changed to ${plan}`,
+    note: `Plan changed to ${plan} (your locked rate $${amount})`,
   });
   res.json(user.toPublic());
 });
@@ -379,6 +404,27 @@ app.post('/api/users/me/cancel-subscription', authMiddleware, requireRole('custo
     { uid: req.user.uid }, { subscriptionStatus: 'cancelled' }, { new: true }
   );
   res.json(user.toPublic());
+});
+
+// ── Admin: pricing (new signups only; existing keep locked rates) ───
+app.get('/api/admin/pricing', authMiddleware, requireRole('admin'), async (_, res) => {
+  const config = await getPricingConfig();
+  const customers = await User.find({ role: 'customer' });
+  res.json({
+    ...config,
+    stats: {
+      customers: customers.length,
+      withLockedMonthly: customers.filter(c => c.lockedMonthlyPrice != null).length,
+    },
+  });
+});
+
+app.patch('/api/admin/pricing', authMiddleware, requireRole('admin'), async (req, res) => {
+  const updated = await updatePricingConfig(req.body);
+  res.json({
+    ...updated,
+    message: 'Updated prices apply to NEW signups only. Existing customers keep their locked rates.',
+  });
 });
 
 // ── Admin: services CRUD ────────────────────────────────────────────
@@ -417,6 +463,7 @@ async function connectMongo(retries = 5) {
     try {
       await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
       console.log('MongoDB connected (hmm-api)');
+      await migrateLegacyPricing();
       return;
     } catch (err) {
       console.error(`MongoDB attempt ${i}/${retries} failed:`, err.message);

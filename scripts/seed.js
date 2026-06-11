@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { User, ServiceType } = require('../src/models');
+const { DEFAULTS } = require('../src/pricing');
 
 const ACCOUNTS = [
   { email: 'admin@hmm.com', password: 'hmm123', name: 'Admin', role: 'admin' },
@@ -48,6 +49,11 @@ async function main() {
       subscriptionStatus: 'active',
       subscriptionPlan: 'monthly',
       renewalDate: acct.role === 'customer' ? new Date(Date.now() + 30 * 86400000) : null,
+      signupFeePaid: acct.role === 'customer',
+      signupFeeAmount: acct.role === 'customer' ? DEFAULTS.signupFee : 0,
+      lockedMonthlyPrice: acct.role === 'customer' ? DEFAULTS.monthlyPriceNew : undefined,
+      lockedAnnualPrice: acct.role === 'customer' ? DEFAULTS.annualPriceNew : undefined,
+      pricingLockedAt: acct.role === 'customer' ? new Date() : undefined,
     });
     console.log(`Created: ${acct.email} (${acct.role})`);
   }
