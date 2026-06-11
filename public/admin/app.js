@@ -246,7 +246,7 @@ async function login(email, password) {
   applyNav(nav);
   replaceNav(nav);
   suppressNavPush = false;
-  state.pollTimer = setInterval(refreshAll, 10000);
+  state.pollTimer = setInterval(() => refreshAll({ rerenderDetails: false }), 30000);
 }
 
 $('#login-form').addEventListener('submit', async (e) => {
@@ -283,11 +283,11 @@ $$('.nav-btn').forEach(btn => {
 
 // ── Data ────────────────────────────────────────────────────────────
 
-async function refreshAll() {
+async function refreshAll({ rerenderDetails = true } = {}) {
   if (isWorkerPortal()) {
     state.orders = await api('GET', '/orders');
     renderJobsTable();
-    if (state.selectedOrderId) renderJobDetail();
+    if (rerenderDetails && state.selectedOrderId) renderJobDetail();
     await refreshNotifications();
     return;
   }
@@ -314,8 +314,10 @@ async function refreshAll() {
     populateCreateJobCustomers();
   }
   renderJobsTable();
-  if (state.selectedOrderId) renderJobDetail();
-  if (state.selectedUserUid) renderUserDetail();
+  if (rerenderDetails) {
+    if (state.selectedOrderId) renderJobDetail();
+    if (state.selectedUserUid) renderUserDetail();
+  }
   await refreshNotifications();
 }
 
@@ -1394,6 +1396,6 @@ $('#password-form')?.addEventListener('submit', async (e) => {
     applyNav(nav);
     replaceNav(nav);
     suppressNavPush = false;
-    state.pollTimer = setInterval(refreshAll, 10000);
+    state.pollTimer = setInterval(() => refreshAll({ rerenderDetails: false }), 30000);
   } catch { logout(); }
 })();
