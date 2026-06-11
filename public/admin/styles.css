@@ -220,6 +220,27 @@ tr:hover td { background: #222; }
   margin-bottom: 8px;
 }
 .checklist-row input[type=text] { flex: 1; }
+.add-task-box {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+}
+.add-task-box label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.add-task-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.add-task-row select { flex: 1; min-width: 180px; }
+.add-task-row input[type=text] { flex: 1; min-width: 180px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .empty { color: var(--muted); font-size: 0.88rem; }
 .toast {

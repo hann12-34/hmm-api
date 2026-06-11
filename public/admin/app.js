@@ -63,7 +63,38 @@ function photoImg(url) {
 
 function userName(uid) {
   const u = state.users.find(x => x.uid === uid);
-  return u ? `${u.name || u.email} (${u.role})` : uid || '—';
+  return u ? (u.name || u.email) : '—';
+}
+
+function taskTemplateOptions() {
+  const names = state.services.map(s => s.name).filter(Boolean);
+  const opts = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  return `
+    <option value="">— Choose a registered task —</option>
+    ${opts}
+    <option value="__custom__">✏️ Type custom task…</option>
+  `;
+}
+
+function appendChecklistRow(title) {
+  const list = $('#checklist');
+  const empty = list.querySelector('.empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'checklist-row';
+  div.innerHTML = `
+    <input type="checkbox" data-field="done">
+    <input type="text" value="${esc(title)}" data-field="title">
+    <button class="btn btn-ghost" data-action="remove">✕</button>
+  `;
+  div.querySelector('[data-action=remove]').onclick = () => div.remove();
+  list.appendChild(div);
+}
+
+function wireChecklistRemoves() {
+  $('#checklist').querySelectorAll('[data-action=remove]').forEach(btn => {
+    btn.onclick = () => btn.closest('.checklist-row').remove();
+  });
 }
 
 // ── Auth ────────────────────────────────────────────────────────────
@@ -234,7 +265,14 @@ function renderJobDetail() {
         <div class="card">
           <h3>Checklist</h3>
           <div id="checklist">${checklist || '<p class="empty">No tasks yet.</p>'}</div>
-          <button class="btn btn-ghost" id="add-check-item" style="margin-top:8px">+ Add Task</button>
+          <div class="add-task-box">
+            <label>Add Task</label>
+            <div class="add-task-row">
+              <select id="task-pick">${taskTemplateOptions()}</select>
+              <input id="task-custom" type="text" class="hidden" placeholder="Type custom task…">
+              <button type="button" class="btn btn-ghost" id="confirm-add-task">+ Add</button>
+            </div>
+          </div>
         </div>
         <div class="actions">
           <button class="btn btn-primary" id="save-job">Save Changes</button>
@@ -265,15 +303,34 @@ function renderJobDetail() {
   `;
 
   $('#back-jobs-inline').addEventListener('click', () => $('#back-jobs').click());
-  $('#add-check-item').addEventListener('click', () => {
-    const div = document.createElement('div');
-    div.className = 'checklist-row';
-    div.innerHTML = `<input type="checkbox" data-field="done"><input type="text" placeholder="Task title" data-field="title"><button class="btn btn-ghost" data-action="remove">✕</button>`;
-    div.querySelector('[data-action=remove]').onclick = () => div.remove();
-    $('#checklist').appendChild(div);
+  wireChecklistRemoves();
+
+  const taskPick = $('#task-pick');
+  const taskCustom = $('#task-custom');
+  taskPick.addEventListener('change', () => {
+    const custom = taskPick.value === '__custom__';
+    taskCustom.classList.toggle('hidden', !custom);
+    if (custom) taskCustom.focus();
+    else taskCustom.value = '';
   });
-  $('#checklist').querySelectorAll('[data-action=remove]').forEach(btn => {
-    btn.onclick = () => btn.closest('.checklist-row').remove();
+  $('#confirm-add-task').addEventListener('click', () => {
+    let title = '';
+    if (taskPick.value === '__custom__') {
+      title = taskCustom.value.trim();
+      if (!title) { toast('Enter a custom task title'); return; }
+    } else if (taskPick.value) {
+      title = taskPick.value;
+    } else {
+      toast('Choose a task or type custom');
+      return;
+    }
+    const existing = getChecklist().some(i => i.title.toLowerCase() === title.toLowerCase());
+    if (existing) { toast('Task already on checklist'); return; }
+    appendChecklistRow(title);
+    taskPick.value = '';
+    taskCustom.value = '';
+    taskCustom.classList.add('hidden');
+    toast('Task added — click Save Changes');
   });
 
   $('#save-job').addEventListener('click', () => saveJob(o.id));
