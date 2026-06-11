@@ -194,6 +194,73 @@ tr:hover td { background: #222; }
 .badge.inProgress { background: #3b2f1a; color: var(--gold); }
 .badge.completed { background: #14532d; color: #86efac; }
 .badge.cancelled { background: #3f1d1d; color: #fca5a5; }
+.badge.paused { background: #422006; color: #fcd34d; }
+.badge.needsRevisit { background: #4c1d95; color: #ddd6fe; }
+.stat-card.stat-alert .num { color: #c4b5fd; }
+.stat-card.stat-unread .num { color: var(--gold); }
+.activity-card { margin-bottom: 16px; }
+.activity-label { font-weight: 600; color: var(--gold); }
+.unread-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--gold);
+  color: #111;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+tr.job-unread td { background: rgba(212, 175, 55, 0.06); }
+tr.job-unread:hover td { background: rgba(212, 175, 55, 0.12); }
+.stat-card.stat-request .num { color: #f87171; }
+.request-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  background: #7f1d1d;
+  color: #fecaca;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+tr.job-worker-request td { box-shadow: inset 3px 0 0 #f87171; }
+.alert-banner {
+  background: #3f1d1d;
+  border: 1px solid #7f1d1d;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.alert-banner h4 {
+  margin: 0 0 10px;
+  color: #fecaca;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.unable-request-item {
+  background: #2a1515;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.unable-request-item p { margin: 0 0 6px; }
+.btn-sm { padding: 6px 10px; font-size: 0.78rem; }
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: #fca5a5;
+}
+.btn-outline:hover { background: rgba(248, 113, 113, 0.12); }
+.pending-request-note {
+  color: #fca5a5;
+  font-size: 0.85rem;
+  align-self: center;
+}
 .link-btn {
   background: none;
   border: none;

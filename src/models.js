@@ -37,6 +37,16 @@ const workerNoteSchema = new mongoose.Schema({
   authorUID: String,
 }, { _id: false });
 
+const unableToAttendSchema = new mongoose.Schema({
+  id: String,
+  workerUID: String,
+  reason: String,
+  status: { type: String, default: 'pending' },
+  createdAt: { type: Date, default: Date.now },
+  resolvedAt: Date,
+  resolvedByUID: String,
+}, { _id: false });
+
 const workTimeSchema = new mongoose.Schema({
   id: String,
   event: String,
@@ -74,6 +84,7 @@ const workOrderSchema = new mongoose.Schema({
   estimatedPrice: { type: Number, default: 0 },
   preferredDates: [Date],
   serviceCharged: { type: Boolean, default: false },
+  unableToAttendRequests: [unableToAttendSchema],
 }, { timestamps: true });
 
 const paymentSchema = new mongoose.Schema({
@@ -100,6 +111,13 @@ const appNotificationSchema = new mongoose.Schema({
   orderId: String,
   read: { type: Boolean, default: false },
 }, { timestamps: true });
+
+const staffJobViewSchema = new mongoose.Schema({
+  staffUID: { type: String, required: true },
+  orderId: { type: String, required: true },
+  seenAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+staffJobViewSchema.index({ staffUID: 1, orderId: 1 }, { unique: true });
 
 const auditLogSchema = new mongoose.Schema({
   actorUID: String,
@@ -147,5 +165,6 @@ module.exports = {
   PricingConfig: mongoose.model('PricingConfig', pricingConfigSchema),
   AppNotification: mongoose.model('AppNotification', appNotificationSchema),
   AuditLog: mongoose.model('AuditLog', auditLogSchema),
+  StaffJobView: mongoose.model('StaffJobView', staffJobViewSchema),
   orderToJSON,
 };

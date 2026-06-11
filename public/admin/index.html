@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HMM Admin</title>
-  <link rel="stylesheet" href="/admin/styles.css?v=2">
+  <link rel="stylesheet" href="/admin/styles.css?v=4">
 </head>
 <body>
 
@@ -237,6 +237,20 @@
     </div>
   </div>
 
+  <div id="unable-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Can't Make It</h3>
+      <p class="empty" style="margin-bottom:12px">Tell manager/admin why you can't go to this unit (sick, day off, etc.). They'll reassign or reschedule.</p>
+      <div class="field">
+        <textarea id="unable-reason" rows="3" placeholder="e.g. sick today, scheduled day off, car broke down…"></textarea>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="unable-confirm" class="btn btn-danger" style="width:auto">Send Request</button>
+        <button type="button" id="unable-cancel" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="revisit-modal" class="modal hidden">
     <div class="modal-card">
       <h3>Needs Revisit</h3>
@@ -267,6 +281,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/admin/app.js?v=9"></script>
+  <script src="/admin/app.js?v=11"></script>
 </body>
 </html>

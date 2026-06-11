@@ -132,6 +132,10 @@ function applyNav(nav, { rerender = true } = {}) {
     const showDetail = !!nav.orderId;
     $('#jobs-list-panel').classList.toggle('hidden', showDetail);
     $('#job-detail-panel').classList.toggle('hidden', !showDetail);
+    if (showDetail && nav.orderId) {
+      markJobSeen(nav.orderId);
+      renderJobsTable();
+    }
     if (showDetail && rerender) renderJobDetail();
   } else {
     $('#jobs-list-panel').classList.remove('hidden');
@@ -425,7 +429,67 @@ function computeStats() {
   const recentCancelled = [...cancelled]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
     .slice(0, 8);
-  return { customers, active, cancelled, newMembers, openJobs, pendingJobs, workers, managers, recentJoins, recentCancelled };
+  const needsRevisit = state.orders.filter(o => o.status === 'needsRevisit');
+  const unreadJobs = state.orders.filter(o => !o.seenByStaff && o.status !== 'cancelled');
+  const workerRequests = state.orders.filter(o => pendingUnableRequests(o).length > 0);
+  return {
+    customers, active, cancelled, newMembers, openJobs, pendingJobs, workers, managers,
+    recentJoins, recentCancelled, needsRevisit, unreadJobs, workerRequests,
+  };
+}
+
+const JOB_AUDIT_ACTIONS = new Set([
+  'order.create', 'order.update', 'order.cancel', 'order.confirm_schedule', 'order.delete',
+  'order.start', 'order.pause', 'order.resume', 'order.complete', 'order.revisit', 'order.schedule_revisit',
+  'order.unable_to_attend', 'order.unable_to_attend_resolved',
+]);
+
+function pendingUnableRequests(order) {
+  return (order?.unableToAttendRequests || []).filter(r => r.status === 'pending');
+}
+
+function jobAuditLabel(action) {
+  const labels = {
+    'order.start': 'Started',
+    'order.pause': 'Paused',
+    'order.resume': 'Resumed',
+    'order.complete': 'Completed',
+    'order.revisit': 'Needs Revisit',
+    'order.schedule_revisit': 'Revisit Scheduled',
+    'order.unable_to_attend': 'Cannot Attend',
+    'order.unable_to_attend_resolved': 'Request Handled',
+    'order.create': 'Created',
+    'order.update': 'Updated',
+    'order.cancel': 'Cancelled',
+    'order.confirm_schedule': 'Confirmed',
+    'order.delete': 'Deleted',
+  };
+  return labels[action] || (action || '').replace('order.', '');
+}
+
+function jobActivityRows() {
+  const logs = (state.auditLogs || [])
+    .filter(a => JOB_AUDIT_ACTIONS.has(a.action) || a.targetType === 'order')
+    .slice(0, 20);
+  if (!logs.length) {
+    return '<tr><td colspan="6" class="empty">No job activity yet. Worker status changes appear here after refresh.</td></tr>';
+  }
+  return logs.map(a => {
+    const order = state.orders.find(o => o.id === a.targetId);
+    const unit = order?.unitNumber ? `Unit ${order.unitNumber}` : (a.details?.unitNumber ? `Unit ${a.details.unitNumber}` : 'View job');
+    const status = order?.status || a.details?.status || '';
+    const who = a.actorEmail || a.actorRole || '—';
+    return `
+      <tr>
+        <td>${fmtDate(a.createdAt)}</td>
+        <td>${esc(who)}</td>
+        <td><span class="activity-label">${esc(jobAuditLabel(a.action))}</span></td>
+        <td>${status ? statusBadge(status) : '—'}</td>
+        <td>${esc(a.summary || '—')}</td>
+        <td>${a.targetId ? `<button type="button" class="link-btn" data-activity-job="${a.targetId}">${esc(unit)}</button>` : '—'}</td>
+      </tr>
+    `;
+  }).join('');
 }
 
 function renderOverview() {
@@ -460,6 +524,16 @@ function renderOverview() {
       <div class="stat-card"><div class="num">${s.pendingJobs.length}</div><div class="lbl">Awaiting Confirm</div></div>
       <div class="stat-card"><div class="num">${s.workers.length}</div><div class="lbl">Workers</div></div>
       <div class="stat-card"><div class="num">${s.managers.length}</div><div class="lbl">Managers</div></div>
+      <div class="stat-card stat-alert"><div class="num">${s.needsRevisit.length}</div><div class="lbl">Needs Revisit</div></div>
+      <div class="stat-card stat-unread"><div class="num">${s.unreadJobs.length}</div><div class="lbl">Unread Jobs</div></div>
+      <div class="stat-card stat-request"><div class="num">${s.workerRequests.length}</div><div class="lbl">Worker Requests</div></div>
+    </div>
+    <div class="card activity-card">
+      <h3>Recent Job Activity</h3>
+      <table>
+        <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Status</th><th>Details</th><th>Job</th></tr></thead>
+        <tbody>${jobActivityRows()}</tbody>
+      </table>
     </div>
     <div class="overview-cols">
       <div class="card">
@@ -479,6 +553,9 @@ function renderOverview() {
     </div>
   `;
   wireUserLinks($('#overview-content'));
+  $('#overview-content').querySelectorAll('[data-activity-job]').forEach(btn => {
+    btn.addEventListener('click', () => openJob(btn.dataset.activityJob));
+  });
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────
@@ -519,17 +596,22 @@ function renderJobsTable() {
     tbody.innerHTML = '<tr><td colspan="7" class="empty">No jobs found.</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map(o => `
-    <tr>
+  tbody.innerHTML = rows.map(o => {
+    const unread = isStaff() && !o.seenByStaff;
+    const workerReq = isStaff() && pendingUnableRequests(o).length > 0;
+    const rowClass = [unread ? 'job-unread' : '', workerReq ? 'job-worker-request' : ''].filter(Boolean).join(' ');
+    return `
+    <tr class="${rowClass}">
       <td><strong>${esc(o.region || '—')}</strong></td>
-      <td><button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
+      <td>${unread ? '<span class="unread-pill" title="Not opened yet">New</span> ' : ''}${workerReq ? '<span class="request-pill" title="Worker cannot attend">!</span> ' : ''}<button class="link-btn" data-id="${o.id}">${esc(o.unitNumber ? `Unit ${o.unitNumber}` : 'View')}</button></td>
       <td>${o.status === 'pendingConfirmation' ? 'Awaiting confirm' : fmtDate(o.scheduledDate)}</td>
       <td>${statusBadge(o.status)}</td>
       <td>${userLink(o.assignedWorkerUID, userName(o.assignedWorkerUID))}</td>
       <td>${(o.requestedServices || []).join(', ') || '—'}</td>
       <td>$${o.estimatedPrice || 0}</td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
   tbody.querySelectorAll('.link-btn[data-id]').forEach(btn => {
     btn.addEventListener('click', () => openJob(btn.dataset.id));
@@ -537,7 +619,17 @@ function renderJobsTable() {
   wireUserLinks(tbody);
 }
 
+function markJobSeen(id) {
+  if (!isStaff() || !id) return;
+  api('POST', `/admin/orders/${id}/seen`).catch(() => {});
+  const o = state.orders.find(x => x.id === id);
+  if (o) o.seenByStaff = true;
+}
+
 function openJob(id) {
+  markJobSeen(id);
+  renderJobsTable();
+  if ($('#overview-content')?.innerHTML) renderOverview();
   navigate({
     tab: 'jobs',
     orderId: id,
@@ -572,6 +664,8 @@ async function renderWorkerJobDetail() {
   const st = o.status;
   const canEditChecklist = st === 'inProgress' || st === 'paused';
   const allChecked = !(o.checklistItems || []).length || (o.checklistItems || []).every(i => i.isCompleted);
+  const hasPendingUnable = pendingUnableRequests(o).length > 0;
+  const activeJob = ['scheduled', 'inProgress', 'paused', 'needsRevisit'].includes(st);
 
   const checklistHtml = (o.checklistItems || []).map((item, i) => {
     if (canEditChecklist) {
@@ -604,6 +698,11 @@ async function renderWorkerJobDetail() {
     actionBtns = `
       <input type="datetime-local" id="w-revisit-date" value="${toLocalInput(o.scheduledDate)}" style="max-width:220px">
       <button class="btn btn-primary" id="w-schedule-revisit">Schedule Revisit</button>`;
+  }
+  if (activeJob) {
+    actionBtns += hasPendingUnable
+      ? `<span class="pending-request-note">Request sent — waiting for manager/admin</span>`
+      : `<button class="btn btn-danger btn-outline" id="w-unable">Can't Make It</button>`;
   }
 
   el.innerHTML = `
@@ -666,6 +765,7 @@ async function renderWorkerJobDetail() {
     try { await workerOrderAction(`/orders/${o.id}/complete`, o.id); } catch (ex) { toast(ex.message); }
   });
   $('#w-revisit')?.addEventListener('click', () => openRevisitModal(o.id));
+  $('#w-unable')?.addEventListener('click', () => openUnableModal(o.id));
   $('#w-schedule-revisit')?.addEventListener('click', async () => {
     try {
       const dateVal = $('#w-revisit-date').value;
@@ -747,6 +847,20 @@ function renderJobDetail() {
   const preferredDates = (o.preferredDates || []).map(d => `<li>${fmtDate(d)}</li>`).join('')
     || (o.scheduledDate ? `<li>${fmtDate(o.scheduledDate)}</li>` : '<li class="empty">None</li>');
   const isPending = o.status === 'pendingConfirmation';
+  const unablePending = pendingUnableRequests(o);
+  const unableBanner = unablePending.length ? `
+    <div class="alert-banner">
+      <h4>Worker Cannot Attend</h4>
+      ${unablePending.map(r => `
+        <div class="unable-request-item">
+          <p><strong>${esc(userName(r.workerUID))}</strong> · ${fmtDate(r.createdAt)}</p>
+          <p>${esc(r.reason)}</p>
+          <button type="button" class="btn btn-ghost btn-sm" data-resolve-unable="${r.id}">Mark handled</button>
+        </div>
+      `).join('')}
+      <p class="empty" style="margin-top:8px">Reassign worker or reschedule, then mark handled.</p>
+    </div>
+  ` : '';
 
   const workerNotes = (o.workerNotes || []).map(n => `
     <div class="note-block">
@@ -759,6 +873,7 @@ function renderJobDetail() {
     <div class="toolbar">
       <span>${statusBadge(o.status)}</span>
     </div>
+    ${unableBanner}
     <div class="detail-grid">
       <div>
         <div class="card">
@@ -894,6 +1009,22 @@ function renderJobDetail() {
   $('#save-job')?.addEventListener('click', () => saveJob(o.id));
   $('#cancel-job')?.addEventListener('click', () => cancelJob(o.id));
   $('#delete-job')?.addEventListener('click', () => deleteJob(o.id));
+
+  el.querySelectorAll('[data-resolve-unable]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try {
+        const updated = await api('POST', `/admin/orders/${o.id}/resolve-unable`, {
+          requestId: btn.dataset.resolveUnable,
+        });
+        const idx = state.orders.findIndex(x => x.id === o.id);
+        if (idx >= 0) state.orders[idx] = updated;
+        renderJobDetail();
+        renderJobsTable();
+        if ($('#overview-content')?.innerHTML) renderOverview();
+        toast('Request marked handled');
+      } catch (ex) { toast(ex.message); }
+    });
+  });
 
   wireUserLinks(el);
 }
@@ -1315,7 +1446,44 @@ function toLocalInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// ── Worker: Needs Revisit (reason + auto note, matches iOS app) ───────
+// ── Worker: Can't Make It / Needs Revisit ───────────────────────────
+
+let pendingUnableOrderId = null;
+
+function openUnableModal(orderId) {
+  pendingUnableOrderId = orderId;
+  $('#unable-reason').value = '';
+  $('#unable-modal').classList.remove('hidden');
+  $('#unable-reason').focus();
+}
+
+async function confirmUnable() {
+  const orderId = pendingUnableOrderId;
+  const reason = ($('#unable-reason').value || '').trim();
+  if (!orderId) return;
+  if (!reason) { toast('Enter a reason'); return; }
+  try {
+    const updated = await api('POST', `/orders/${orderId}/unable-to-attend`, { reason });
+    const idx = state.orders.findIndex(x => x.id === orderId);
+    if (idx >= 0) state.orders[idx] = updated;
+    $('#unable-modal').classList.add('hidden');
+    pendingUnableOrderId = null;
+    renderJobDetail();
+    toast('Request sent to manager/admin');
+  } catch (ex) { toast(ex.message); }
+}
+
+$('#unable-confirm')?.addEventListener('click', confirmUnable);
+$('#unable-cancel')?.addEventListener('click', () => {
+  $('#unable-modal').classList.add('hidden');
+  pendingUnableOrderId = null;
+});
+$('#unable-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'unable-modal') {
+    $('#unable-modal').classList.add('hidden');
+    pendingUnableOrderId = null;
+  }
+});
 
 let pendingRevisitOrderId = null;
 

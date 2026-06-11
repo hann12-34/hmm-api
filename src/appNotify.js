@@ -51,6 +51,19 @@ async function onVisitConfirmed(customer, order) {
   });
 }
 
+async function onWorkerUnableToAttend(worker, order, reason) {
+  const orderId = order._id?.toString() || order.id || '';
+  const who = worker?.name || worker?.email || 'Worker';
+  const unit = order.unitNumber || '—';
+  const when = new Date(order.scheduledDate).toLocaleString();
+  await pushToAdmins({
+    title: 'Worker cannot attend',
+    body: `${who} · Unit ${unit} · ${when} — ${reason}`,
+    type: 'worker_unable_to_attend',
+    orderId,
+  });
+}
+
 async function onRedoCreated(customer, originalOrder, redoOrder) {
   const orderId = redoOrder._id?.toString() || redoOrder.id || '';
   await pushToUser(customer.uid, {
@@ -86,6 +99,7 @@ module.exports = {
   pushToAdmins,
   onVisitRequested,
   onVisitConfirmed,
+  onWorkerUnableToAttend,
   onRedoCreated,
   notificationToJSON,
 };

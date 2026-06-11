@@ -5,7 +5,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { User, WorkOrder, Payment, ServiceType, AppNotification, AuditLog, orderToJSON } = require('./models');
+const { User, WorkOrder, Payment, ServiceType, AppNotification, AuditLog, StaffJobView, orderToJSON } = require('./models');
 const { signToken, authMiddleware, requireRole, isStaffRole } = require('./auth');
 const { canAccessOrder, workerCanAct } = require('./orderAccess');
 const { logAudit, auditToJSON } = require('./auditLog');
@@ -19,6 +19,7 @@ const {
 const {
   onVisitRequested,
   onVisitConfirmed,
+  onWorkerUnableToAttend,
   onRedoCreated,
   notificationToJSON,
 } = require('./appNotify');
@@ -38,10 +39,28 @@ function orderForRole(doc, role) {
     o.adminNote = '';
     o.workerNote = '';
     o.workerNotes = [];
+    o.unableToAttendRequests = [];
   } else if (role === 'worker') {
     o.adminNote = '';
   }
   return o;
+}
+
+async function logOrderAudit(actor, order, action, summary, details = {}) {
+  await logAudit({
+    actor,
+    action,
+    targetType: 'order',
+    targetId: order._id.toString(),
+    summary,
+    details: {
+      status: order.status,
+      unitNumber: order.unitNumber,
+      region: order.region,
+      customerUID: order.customerUID,
+      ...details,
+    },
+  });
 }
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
@@ -156,6 +175,16 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
   else if (req.user.role === 'worker') query.assignedWorkerUID = req.user.uid;
   // admin/manager: all orders
   const orders = await WorkOrder.find(query).sort({ scheduledDate: -1 });
+  if (isStaffRole(req.user.role)) {
+    const ids = orders.map(o => o._id.toString());
+    const views = await StaffJobView.find({ staffUID: req.user.uid, orderId: { $in: ids } });
+    const seenSet = new Set(views.map(v => v.orderId));
+    return res.json(orders.map(o => {
+      const json = orderForRole(o, req.user.role);
+      json.seenByStaff = seenSet.has(o._id.toString());
+      return json;
+    }));
+  }
   res.json(orders.map(o => orderForRole(o, req.user.role)));
 });
 
@@ -444,7 +473,9 @@ app.post('/api/orders/:id/start', authMiddleware, requireRole('worker'), async (
   order.status = 'inProgress';
   order.startedAt = new Date();
   order.assignedWorkerUID = req.user.uid;
-  res.json(orderForRole(await appendWorkTime(order, 'started', req.user.uid), req.user.role));
+  const saved = await appendWorkTime(order, 'started', req.user.uid);
+  await logOrderAudit(req.user, saved, 'order.start', `Started job Unit ${saved.unitNumber || '—'}`);
+  res.json(orderForRole(saved, req.user.role));
 });
 
 app.post('/api/orders/:id/pause', authMiddleware, requireRole('worker'), async (req, res) => {
@@ -452,7 +483,9 @@ app.post('/api/orders/:id/pause', authMiddleware, requireRole('worker'), async (
   if (!order || order.status !== 'inProgress') return res.status(400).json({ error: 'Cannot pause' });
   if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   order.status = 'paused';
-  res.json(orderForRole(await appendWorkTime(order, 'paused', req.user.uid), req.user.role));
+  const saved = await appendWorkTime(order, 'paused', req.user.uid);
+  await logOrderAudit(req.user, saved, 'order.pause', `Paused job Unit ${saved.unitNumber || '—'}`);
+  res.json(orderForRole(saved, req.user.role));
 });
 
 app.post('/api/orders/:id/resume', authMiddleware, requireRole('worker'), async (req, res) => {
@@ -460,7 +493,9 @@ app.post('/api/orders/:id/resume', authMiddleware, requireRole('worker'), async 
   if (!order || order.status !== 'paused') return res.status(400).json({ error: 'Cannot resume' });
   if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
   order.status = 'inProgress';
-  res.json(orderForRole(await appendWorkTime(order, 'resumed', req.user.uid), req.user.role));
+  const saved = await appendWorkTime(order, 'resumed', req.user.uid);
+  await logOrderAudit(req.user, saved, 'order.resume', `Resumed job Unit ${saved.unitNumber || '—'}`);
+  res.json(orderForRole(saved, req.user.role));
 });
 
 app.post('/api/orders/:id/complete', authMiddleware, requireRole('worker'), async (req, res) => {
@@ -484,6 +519,7 @@ app.post('/api/orders/:id/complete', authMiddleware, requireRole('worker'), asyn
     order.serviceCharged = true;
     await order.save();
   }
+  await logOrderAudit(req.user, result, 'order.complete', `Completed job Unit ${result.unitNumber || '—'}`);
   res.json(orderForRole(result, req.user.role));
 });
 
@@ -500,6 +536,7 @@ app.post('/api/orders/:id/revisit', authMiddleware, requireRole('worker'), async
     order.revisitCount += 1;
     await order.save();
   }
+  await logOrderAudit(req.user, order, 'order.revisit', `Needs revisit — Unit ${order.unitNumber || '—'}`);
   res.json(orderForRole(order, req.user.role));
 });
 
@@ -510,7 +547,90 @@ app.post('/api/orders/:id/schedule-revisit', authMiddleware, requireRole('worker
   order.scheduledDate = new Date(req.body.date);
   order.status = 'scheduled';
   await order.save();
+  await logOrderAudit(req.user, order, 'order.schedule_revisit', `Scheduled revisit Unit ${order.unitNumber || '—'}`);
   res.json(orderForRole(order, req.user.role));
+});
+
+const ACTIVE_JOB_STATUSES = ['scheduled', 'inProgress', 'paused', 'needsRevisit'];
+
+app.post('/api/orders/:id/unable-to-attend', authMiddleware, requireRole('worker'), async (req, res) => {
+  const order = await WorkOrder.findById(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!workerCanAct(req.user, order)) return res.status(403).json({ error: 'Not assigned to this job' });
+  if (!ACTIVE_JOB_STATUSES.includes(order.status)) {
+    return res.status(400).json({ error: 'Cannot request for this job status' });
+  }
+  const reason = (req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Reason required' });
+
+  order.unableToAttendRequests = order.unableToAttendRequests || [];
+  const alreadyPending = order.unableToAttendRequests.some(
+    r => r.workerUID === req.user.uid && r.status === 'pending'
+  );
+  if (alreadyPending) {
+    return res.status(400).json({ error: 'You already have a pending request for this job' });
+  }
+
+  const entry = {
+    id: crypto.randomUUID(),
+    workerUID: req.user.uid,
+    reason,
+    status: 'pending',
+    createdAt: new Date(),
+  };
+  order.unableToAttendRequests.push(entry);
+  order.workerNotes.push({
+    id: crypto.randomUUID(),
+    text: `Unable to attend: ${reason}`,
+    createdAt: new Date(),
+    authorUID: req.user.uid,
+  });
+  await order.save();
+
+  const worker = await User.findOne({ uid: req.user.uid });
+  onWorkerUnableToAttend(worker, order, reason).catch(console.error);
+  await logOrderAudit(
+    req.user,
+    order,
+    'order.unable_to_attend',
+    `Cannot attend Unit ${order.unitNumber || '—'}: ${reason}`,
+    { reason, requestId: entry.id }
+  );
+  res.json(orderForRole(order, req.user.role));
+});
+
+app.post('/api/admin/orders/:id/resolve-unable', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const order = await WorkOrder.findById(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const requestId = req.body.requestId;
+  let resolved = 0;
+  for (const r of order.unableToAttendRequests || []) {
+    if (r.status !== 'pending') continue;
+    if (requestId && r.id !== requestId) continue;
+    r.status = 'resolved';
+    r.resolvedAt = new Date();
+    r.resolvedByUID = req.user.uid;
+    resolved += 1;
+  }
+  if (!resolved) return res.status(404).json({ error: 'No pending request found' });
+  await order.save();
+  await logOrderAudit(
+    req.user,
+    order,
+    'order.unable_to_attend_resolved',
+    `Handled worker unable-to-attend — Unit ${order.unitNumber || '—'}`,
+    { requestId: requestId || 'all' }
+  );
+  res.json(orderForRole(order, req.user.role));
+});
+
+app.post('/api/admin/orders/:id/seen', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  await StaffJobView.updateOne(
+    { staffUID: req.user.uid, orderId: req.params.id },
+    { seenAt: new Date() },
+    { upsert: true }
+  );
+  res.json({ ok: true });
 });
 
 // ── Admin: users ────────────────────────────────────────────────────
