@@ -20,7 +20,6 @@ let state = {
   selectedUserUid: null,
   notifications: [],
   unreadCount: 0,
-  pollTimer: null,
 };
 
 let suppressNavPush = false;
@@ -56,7 +55,6 @@ async function api(method, path, body) {
 function logout() {
   localStorage.removeItem(TOKEN_KEY);
   state.user = null;
-  clearInterval(state.pollTimer);
   $('#login-view').classList.remove('hidden');
   $('#app-view').classList.add('hidden');
 }
@@ -246,7 +244,6 @@ async function login(email, password) {
   applyNav(nav);
   replaceNav(nav);
   suppressNavPush = false;
-  state.pollTimer = setInterval(() => refreshAll({ rerenderDetails: false }), 30000);
 }
 
 $('#login-form').addEventListener('submit', async (e) => {
@@ -283,11 +280,11 @@ $$('.nav-btn').forEach(btn => {
 
 // ── Data ────────────────────────────────────────────────────────────
 
-async function refreshAll({ rerenderDetails = true } = {}) {
+async function refreshAll() {
   if (isWorkerPortal()) {
     state.orders = await api('GET', '/orders');
     renderJobsTable();
-    if (rerenderDetails && state.selectedOrderId) renderJobDetail();
+    if (state.selectedOrderId) renderJobDetail();
     await refreshNotifications();
     return;
   }
@@ -314,10 +311,8 @@ async function refreshAll({ rerenderDetails = true } = {}) {
     populateCreateJobCustomers();
   }
   renderJobsTable();
-  if (rerenderDetails) {
-    if (state.selectedOrderId) renderJobDetail();
-    if (state.selectedUserUid) renderUserDetail();
-  }
+  if (state.selectedOrderId) renderJobDetail();
+  if (state.selectedUserUid) renderUserDetail();
   await refreshNotifications();
 }
 
@@ -1347,6 +1342,13 @@ $('#revisit-modal')?.addEventListener('click', (e) => {
   }
 });
 
+$('#refresh-btn')?.addEventListener('click', async () => {
+  try {
+    await refreshAll();
+    toast('Data refreshed');
+  } catch (ex) { toast(ex.message); }
+});
+
 // ── Account / Password ──────────────────────────────────────────────
 
 $('#account-btn')?.addEventListener('click', () => {
@@ -1396,6 +1398,5 @@ $('#password-form')?.addEventListener('submit', async (e) => {
     applyNav(nav);
     replaceNav(nav);
     suppressNavPush = false;
-    state.pollTimer = setInterval(() => refreshAll({ rerenderDetails: false }), 30000);
   } catch { logout(); }
 })();
