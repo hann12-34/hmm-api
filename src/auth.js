@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { User } = require('./models');
 
 function signToken(user) {
   return jwt.sign(
@@ -8,12 +9,14 @@ function signToken(user) {
   );
 }
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
   try {
     req.user = jwt.verify(token, process.env.JWT_SECRET);
+    const live = await User.findOne({ uid: req.user.uid });
+    if (live) req.user.role = live.role;
     next();
   } catch {
     res.status(401).json({ error: 'Invalid token' });
