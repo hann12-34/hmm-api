@@ -797,19 +797,28 @@ async function renderUserDetail() {
         <p><strong>Role:</strong> ${u.role}</p>
         <p><strong>Joined:</strong> ${fmtDate(u.createdAt)}</p>
         ${profileExtra}
-        ${u.role === 'customer' ? `
+        ${u.role !== 'admin' ? `
         <form id="admin-user-form" style="margin-top:16px">
-          <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
-          <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
-          <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
+          <div class="field">
+            <label>Role</label>
+            <select id="u-role">
+              <option value="customer" ${u.role === 'customer' ? 'selected' : ''}>Customer</option>
+              <option value="worker" ${u.role === 'worker' ? 'selected' : ''}>Worker</option>
+            </select>
+          </div>
+          <div id="customer-only-fields" class="${u.role === 'customer' ? '' : 'hidden'}">
+            <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
+            <div class="field"><label>Address (admin only)</label><input id="u-address" value="${esc(u.address || '')}"></div>
+            <div class="field"><label>Unit Number</label><input id="u-unit" value="${esc(u.unitNumber || '')}"></div>
+          </div>
           <div class="field"><label>Phone</label><input id="u-phone" value="${esc(u.phoneNumber || '')}"></div>
           <div class="field" style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" id="u-notify-app" ${u.notifyApp !== false ? 'checked' : ''} style="width:auto">
             <label for="u-notify-app" style="margin:0">App notifications</label>
           </div>
-          <button type="submit" class="btn btn-primary">Save Customer Info</button>
+          <button type="submit" class="btn btn-primary">Save User</button>
         </form>
-        <p class="empty" style="margin-top:8px">Set region (e.g. Lougheed, Gastown) for job filtering and worker batching. Address is admin-only.</p>
+        <p class="empty" style="margin-top:8px">App signups are always customers. Change to Worker here to grant field-worker app access.</p>
         ` : ''}
       </div>
       <div class="card" style="margin-bottom:20px">
@@ -835,19 +844,38 @@ async function renderUserDetail() {
     wireUserLinks(el);
 
     const userForm = el.querySelector('#admin-user-form');
+    const roleSelect = el.querySelector('#u-role');
+    const customerFields = el.querySelector('#customer-only-fields');
+    if (roleSelect && customerFields) {
+      roleSelect.addEventListener('change', () => {
+        customerFields.classList.toggle('hidden', roleSelect.value !== 'customer');
+      });
+    }
     if (userForm) {
       userForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const newRole = $('#u-role').value;
+        if (newRole !== u.role) {
+          const msg = newRole === 'worker'
+            ? 'Change to Worker? They will get worker app access and lose active customer subscription.'
+            : 'Change to Customer? They will get customer app access and subscription billing.';
+          if (!confirm(msg)) return;
+        }
         try {
-          await api('PATCH', `/users/${uid}`, {
-            region: $('#u-region').value.trim(),
-            address: $('#u-address').value.trim(),
-            unitNumber: $('#u-unit').value.trim(),
+          const body = {
+            role: newRole,
             phoneNumber: $('#u-phone').value.trim(),
             notifyApp: $('#u-notify-app').checked,
-          });
+          };
+          if (newRole === 'customer') {
+            body.region = $('#u-region').value.trim();
+            body.address = $('#u-address').value.trim();
+            body.unitNumber = $('#u-unit').value.trim();
+          }
+          await api('PATCH', `/users/${uid}`, body);
           await refreshAll();
-          toast('Customer info saved');
+          await renderUserDetail();
+          toast('User saved');
         } catch (ex) { toast(ex.message); }
       });
     }

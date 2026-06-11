@@ -38,7 +38,7 @@ app.get('/health', (_, res) => res.json({ ok: true, service: 'hmm-api' }));
 // ── Auth ────────────────────────────────────────────────────────────
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, name, role, unitNumber, address, phoneNumber } = req.body;
+    const { email, password, name, unitNumber, address, phoneNumber } = req.body;
     if (!email || !password || password.length < 6) {
       return res.status(400).json({ error: 'Email and password (6+ chars) required' });
     }
@@ -46,7 +46,7 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(409).json({ error: 'Email already in use' });
     }
     const uid = crypto.randomUUID();
-    const userRole = ['customer', 'worker', 'admin'].includes(role) ? role : 'customer';
+    const userRole = 'customer';
     const plan = 'monthly';
     const renewal = new Date();
     renewal.setMonth(renewal.getMonth() + 1);
@@ -456,22 +456,59 @@ app.patch('/api/users/me/profile', authMiddleware, async (req, res) => {
 });
 
 app.patch('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
-  const allowed = ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp'];
+  const user = await User.findOne({ uid: req.params.uid });
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  if (user.role === 'admin') {
+    return res.status(400).json({ error: 'Admin accounts cannot be edited here' });
+  }
+
+  const allowed = ['name', 'address', 'unitNumber', 'region', 'phoneNumber', 'notifyApp', 'role'];
   const patch = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) {
-      patch[k] = k === 'notifyApp' ? !!req.body[k] : req.body[k];
+      patch[k] = (k === 'notifyApp') ? !!req.body[k] : req.body[k];
     }
   }
-  const user = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
-  if (!user) return res.status(404).json({ error: 'Not found' });
-  if (patch.region !== undefined && user.role === 'customer') {
+
+  if (patch.role !== undefined) {
+    if (!['customer', 'worker'].includes(patch.role)) {
+      return res.status(400).json({ error: 'Role must be customer or worker' });
+    }
+    if (patch.role !== user.role) {
+      if (patch.role === 'worker') {
+        patch.subscriptionStatus = 'cancelled';
+        patch.renewalDate = null;
+        await WorkOrder.updateMany(
+          { customerUID: user.uid, status: { $in: ['pendingConfirmation', 'scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
+          { status: 'cancelled' }
+        );
+      } else {
+        const pricing = await getPricingConfig();
+        const locked = lockedPricesFromConfig(pricing);
+        if (user.lockedMonthlyPrice == null) {
+          Object.assign(patch, locked);
+        }
+        patch.subscriptionStatus = 'active';
+        patch.subscriptionPlan = user.subscriptionPlan || 'monthly';
+        const renewal = new Date();
+        renewal.setMonth(renewal.getMonth() + 1);
+        patch.renewalDate = renewal;
+        if (!user.signupFeePaid) {
+          patch.signupFeePaid = true;
+          patch.signupFeeAmount = pricing.signupFee;
+        }
+      }
+    }
+  }
+
+  const updated = await User.findOneAndUpdate({ uid: req.params.uid }, patch, { new: true });
+  if (patch.region !== undefined && updated.role === 'customer') {
     await WorkOrder.updateMany(
-      { customerUID: user.uid, status: { $nin: ['completed', 'cancelled'] } },
+      { customerUID: updated.uid, status: { $nin: ['completed', 'cancelled'] } },
       { $set: { region: patch.region } }
     );
   }
-  res.json(user.toPublic());
+  res.json(updated.toPublic());
 });
 
 app.delete('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
