@@ -253,7 +253,16 @@ tr:hover td { background: #222; }
   gap: 8px;
   margin-bottom: 8px;
 }
-.checklist-row input[type=text] { flex: 1; }
+.checklist-row input[type=checkbox] {
+  width: auto;
+  flex: 0 0 auto;
+}
+.checklist-row input[type=text] {
+  flex: 1 1 0;
+  min-width: 140px;
+  width: auto;
+}
+.checklist-row .btn { flex: 0 0 auto; }
 .add-task-box {
   margin-top: 12px;
   padding-top: 12px;

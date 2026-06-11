@@ -186,16 +186,31 @@ function taskTemplateOptions() {
 
 function appendChecklistRow(title) {
   const list = $('#checklist');
+  if (!list) return;
   const empty = list.querySelector('.empty');
   if (empty) empty.remove();
+
   const div = document.createElement('div');
   div.className = 'checklist-row';
-  div.innerHTML = `
-    <input type="checkbox" data-field="done">
-    <input type="text" value="${esc(title)}" data-field="title">
-    <button class="btn btn-ghost" data-action="remove">✕</button>
-  `;
-  div.querySelector('[data-action=remove]').onclick = () => div.remove();
+
+  const done = document.createElement('input');
+  done.type = 'checkbox';
+  done.dataset.field = 'done';
+
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.dataset.field = 'title';
+  titleInput.value = title;
+  titleInput.placeholder = 'Task title';
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'btn btn-ghost';
+  removeBtn.dataset.action = 'remove';
+  removeBtn.textContent = '✕';
+  removeBtn.onclick = () => div.remove();
+
+  div.append(done, titleInput, removeBtn);
   list.appendChild(div);
 }
 
