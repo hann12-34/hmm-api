@@ -91,6 +91,13 @@ function userLink(uid, label) {
   return `<button type="button" class="link-btn" data-user="${uid}">${esc(text)}</button>`;
 }
 
+/** Users tab — admin can open manager profiles; managers cannot open admin/manager. */
+function usersTableNameCell(u) {
+  if (u.role === 'admin') return esc(u.name || '—');
+  if (u.role === 'manager' && !isAdmin()) return esc(u.name || '—');
+  return `<button type="button" class="link-btn" data-user="${u.uid}">${esc(u.name || '—')}</button>`;
+}
+
 function wireUserLinks(root) {
   (root || document).querySelectorAll('[data-user]').forEach(btn => {
     btn.addEventListener('click', () => openUser(btn.dataset.user));
@@ -1181,7 +1188,7 @@ function renderUsersTable() {
     const alerts = u.notifyApp !== false ? '🔔' : '🔕';
     return `
     <tr>
-      <td>${['admin', 'manager'].includes(u.role) ? esc(u.name || '—') : userLink(u.uid, u.name || '—')}</td>
+      <td>${usersTableNameCell(u)}</td>
       <td>${esc(u.email)}</td>
       <td>${u.role}</td>
       <td>${esc(u.region || '—')}</td>
