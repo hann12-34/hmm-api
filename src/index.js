@@ -26,6 +26,22 @@ const {
 
 const PORT = process.env.PORT || 3001;
 const app = express();
+app.set('trust proxy', 1);
+
+// Express 4 does not forward rejected promises from async route handlers,
+// which leaves requests hanging (e.g. an invalid Mongo ObjectId throws a CastError).
+// Wrap handlers so async errors reach the error-handling middleware below.
+for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
+  const register = app[method].bind(app);
+  app[method] = function (path, ...handlers) {
+    const wrapped = handlers.map((fn) =>
+      typeof fn === 'function' && fn.length < 4
+        ? function (req, res, next) { return Promise.resolve(fn(req, res, next)).catch(next); }
+        : fn
+    );
+    return register(path, ...wrapped);
+  };
+}
 
 /**
  * Note visibility:
@@ -132,21 +148,51 @@ app.post('/api/auth/signup', async (req, res) => {
     const token = signToken(user);
     res.json({ token, user: user.toPublic() });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
+    console.error('Signup error:', e);
+    res.status(500).json({ error: 'Could not create account. Please try again.' });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+// Basic in-memory login throttle to slow brute-force attempts (per email/IP).
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+
+function loginKey(req) {
+  return (req.body?.email || '').toLowerCase() || req.ip;
+}
+function loginThrottle(req, res, next) {
+  const rec = loginAttempts.get(loginKey(req));
+  if (rec && rec.blockedUntil > Date.now()) {
+    const secs = Math.ceil((rec.blockedUntil - Date.now()) / 1000);
+    return res.status(429).json({ error: `Too many attempts. Try again in ${secs}s.` });
+  }
+  next();
+}
+function noteLoginFailure(req) {
+  const key = loginKey(req);
+  const rec = loginAttempts.get(key) || { count: 0, blockedUntil: 0 };
+  rec.count += 1;
+  if (rec.count >= LOGIN_MAX_FAILURES) {
+    rec.blockedUntil = Date.now() + LOGIN_WINDOW_MS;
+    rec.count = 0;
+  }
+  loginAttempts.set(key, rec);
+}
+
+app.post('/api/auth/login', loginThrottle, async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email: email?.toLowerCase() });
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      noteLoginFailure(req);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+    loginAttempts.delete(loginKey(req));
     res.json({ token: signToken(user), user: user.toPublic() });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('Login error:', e);
+    res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
@@ -338,11 +384,15 @@ app.post('/api/orders/:id/cancel', authMiddleware, async (req, res) => {
 
 app.post('/api/orders/:id/feedback', authMiddleware, requireRole('customer'), async (req, res) => {
   const { rating, feedback, redoRequested } = req.body;
+  const numRating = Number(rating);
+  if (!Number.isFinite(numRating) || numRating < 1 || numRating > 5) {
+    return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+  }
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   if (order.customerUID !== req.user.uid) return res.status(403).json({ error: 'Forbidden' });
 
-  order.customerRating = rating;
+  order.customerRating = numRating;
   order.customerFeedback = feedback || '';
   order.redoRequested = !!redoRequested;
   await order.save();
@@ -442,7 +492,13 @@ app.post('/api/orders/:id/photos/:side', authMiddleware, async (req, res) => {
   }
   const url = req.body.url;
   if (!url) return res.status(400).json({ error: 'url required' });
-  if (!order[field].includes(url)) order[field].push(url);
+  const MAX_PHOTOS = 10;
+  if (!order[field].includes(url)) {
+    if (order[field].length >= MAX_PHOTOS) {
+      return res.status(400).json({ error: `Maximum ${MAX_PHOTOS} photos allowed` });
+    }
+    order[field].push(url);
+  }
   await order.save();
   res.json(orderForRole(order, req.user.role));
 });
@@ -1004,6 +1060,18 @@ app.delete('/api/orders/:id', authMiddleware, requireRole('admin', 'manager'), a
     details: { region: order.region, status: order.status, customerUID: order.customerUID },
   });
   res.json({ ok: true });
+});
+
+// ── Error handling ──────────────────────────────────────────────────
+app.use((err, req, res, _next) => {
+  if (err && err.name === 'CastError') {
+    return res.status(400).json({ error: 'Invalid ID' });
+  }
+  if (err && err.name === 'ValidationError') {
+    return res.status(400).json({ error: 'Invalid data' });
+  }
+  console.error('Unhandled API error:', err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
 // ── Start ───────────────────────────────────────────────────────────

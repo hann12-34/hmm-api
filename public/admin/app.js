@@ -70,8 +70,7 @@ function statusBadge(s) {
 
 function photoImg(url) {
   if (!url) return '';
-  const src = url.startsWith('data:') ? url : url;
-  return `<img src="${src}" alt="photo" onclick="window.open(this.src)">`;
+  return `<img src="${esc(url)}" alt="photo" onclick="window.open(this.src)">`;
 }
 
 function userName(uid) {
