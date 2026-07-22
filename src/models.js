@@ -88,6 +88,14 @@ const workOrderSchema = new mongoose.Schema({
   unableToAttendRequests: [unableToAttendSchema],
 }, { timestamps: true });
 
+// Query patterns: customers/workers list their own orders sorted by date,
+// admins list all by date, and status is filtered on redo lookups.
+workOrderSchema.index({ customerUID: 1, scheduledDate: -1 });
+workOrderSchema.index({ assignedWorkerUID: 1, scheduledDate: -1 });
+workOrderSchema.index({ scheduledDate: -1 });
+workOrderSchema.index({ status: 1 });
+workOrderSchema.index({ redoFromOrderId: 1 }, { sparse: true });
+
 const paymentSchema = new mongoose.Schema({
   customerUID: String,
   date: { type: Date, default: Date.now },
@@ -97,6 +105,7 @@ const paymentSchema = new mongoose.Schema({
   cardLast4: String,
   note: String,
 });
+paymentSchema.index({ customerUID: 1, date: -1 });
 
 const serviceTypeSchema = new mongoose.Schema({
   name: String,
@@ -105,13 +114,16 @@ const serviceTypeSchema = new mongoose.Schema({
 });
 
 const appNotificationSchema = new mongoose.Schema({
-  userUID: { type: String, required: true, index: true },
+  userUID: { type: String, required: true },
   title: String,
   body: String,
   type: { type: String, default: 'general' },
   orderId: String,
   read: { type: Boolean, default: false },
 }, { timestamps: true });
+// Covers the per-user notification list (sorted by date) and the unread count.
+appNotificationSchema.index({ userUID: 1, createdAt: -1 });
+appNotificationSchema.index({ userUID: 1, read: 1 });
 
 const staffJobViewSchema = new mongoose.Schema({
   staffUID: { type: String, required: true },
@@ -130,6 +142,8 @@ const auditLogSchema = new mongoose.Schema({
   summary: String,
   details: mongoose.Schema.Types.Mixed,
 }, { timestamps: true });
+// Audit log is read newest-first.
+auditLogSchema.index({ createdAt: -1 });
 
 const pricingConfigSchema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'default' },
