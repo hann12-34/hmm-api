@@ -1593,10 +1593,11 @@ $('#account-modal')?.addEventListener('click', (e) => {
 $('#password-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    await api('PATCH', '/users/me/password', {
+    const res = await api('PATCH', '/users/me/password', {
       currentPassword: $('#pw-current').value,
       newPassword: $('#pw-new').value,
     });
+    if (res?.token) localStorage.setItem(TOKEN_KEY, res.token);
     $('#account-modal').classList.add('hidden');
     toast('Password updated');
   } catch (ex) { toast(ex.message); }

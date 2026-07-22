@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -86,6 +87,9 @@ async function logOrderAudit(actor, order, action, summary, details = {}) {
   });
 }
 
+// Security headers. CSP is disabled because the admin dashboard uses inline
+// event handlers and data: image URLs; the other helmet protections still apply.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '15mb' }));
 
@@ -104,6 +108,9 @@ app.post('/api/auth/signup', async (req, res) => {
     if (!email || !password || password.length < 6) {
       return res.status(400).json({ error: 'Email and password (6+ chars) required' });
     }
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
     if (await User.findOne({ email: email.toLowerCase() })) {
       return res.status(409).json({ error: 'Email already in use' });
     }
@@ -118,7 +125,7 @@ app.post('/api/auth/signup', async (req, res) => {
       uid,
       email: email.toLowerCase(),
       passwordHash: await bcrypt.hash(password, 10),
-      name: name || email.split('@')[0],
+      name: (name || email.split('@')[0]).toString().slice(0, 120),
       role: userRole,
       unitNumber: unitNumber || '',
       address: address || '',
@@ -252,8 +259,18 @@ app.get('/api/orders/:id', authMiddleware, async (req, res) => {
 app.post('/api/orders', authMiddleware, requireRole('customer', 'admin', 'manager'), async (req, res) => {
   const body = req.body;
   const customerUID = isStaffRole(req.user.role) ? body.customerUID : req.user.uid;
+  if (!customerUID) return res.status(400).json({ error: 'customerUID required' });
   const customer = await User.findOne({ uid: customerUID });
-  const slots = body.preferredDates?.length ? body.preferredDates.map(d => new Date(d)) : [new Date()];
+  if (!customer) return res.status(404).json({ error: 'Customer not found' });
+  const rawSlots = Array.isArray(body.preferredDates) && body.preferredDates.length
+    ? body.preferredDates
+    : [new Date()];
+  const slots = rawSlots.map(d => new Date(d)).filter(d => !Number.isNaN(d.getTime()));
+  if (!slots.length) return res.status(400).json({ error: 'Valid preferred date required' });
+  const requestedServices = Array.isArray(body.requestedServices)
+    ? body.requestedServices.map(s => String(s).trim()).filter(Boolean)
+    : [];
+  const estimatedPrice = Math.max(0, Number(body.estimatedPrice) || 0);
   const isAdmin = isStaffRole(req.user.role);
   const order = await WorkOrder.create({
     customerUID,
@@ -262,10 +279,10 @@ app.post('/api/orders', authMiddleware, requireRole('customer', 'admin', 'manage
     region: customer?.region || body.region || '',
     scheduledDate: slots[0],
     preferredDates: slots,
-    customerNote: body.customerNote || '',
-    requestedServices: body.requestedServices || [],
-    estimatedPrice: body.estimatedPrice || 0,
-    customerPhotos: body.customerPhotos || [],
+    customerNote: (body.customerNote || '').toString().slice(0, 2000),
+    requestedServices,
+    estimatedPrice,
+    customerPhotos: Array.isArray(body.customerPhotos) ? body.customerPhotos.slice(0, 10) : [],
     status: isAdmin ? (body.status || 'scheduled') : 'pendingConfirmation',
     confirmedAt: isAdmin ? new Date() : null,
   });
@@ -847,6 +864,8 @@ app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manage
     return res.status(401).json({ error: 'Current password is incorrect' });
   }
   user.passwordHash = await bcrypt.hash(newPassword, 10);
+  // Invalidate sessions on other devices; re-issue a token for this one.
+  user.tokenVersion = (user.tokenVersion ?? 0) + 1;
   await user.save();
   await logAudit({
     actor: req.user,
@@ -855,7 +874,7 @@ app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manage
     targetId: user.uid,
     summary: `${user.email} changed password`,
   });
-  res.json({ ok: true });
+  res.json({ ok: true, token: signToken(user) });
 });
 
 app.delete('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
