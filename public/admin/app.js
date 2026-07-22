@@ -7,7 +7,7 @@ function isAdmin() { return state.user?.role === 'admin'; }
 function isManager() { return state.user?.role === 'manager'; }
 function isStaff() { return STAFF_ROLES.includes(state.user?.role); }
 function isWorkerPortal() { return state.user?.role === 'worker'; }
-function canDelete() { return isStaff(); }
+function canDelete() { return isAdmin(); }
 
 let state = {
   user: null,
@@ -246,7 +246,7 @@ function applyRoleShell() {
     jobs: true,
     users: isStaff(),
     services: isStaff(),
-    pricing: isStaff(),
+    pricing: isAdmin(),
     audit: isStaff(),
   };
   $$('.nav-btn').forEach(btn => {
@@ -1280,15 +1280,16 @@ async function renderUserDetail() {
         ${profileExtra}
         ${isStaff() && u.role !== 'admin' && u.role !== 'manager' ? `
         <form id="admin-user-form" style="margin-top:16px">
+          ${isAdmin() ? `
           <div class="field">
             <label>Role</label>
             <select id="u-role">
               <option value="customer" ${u.role === 'customer' ? 'selected' : ''}>Customer</option>
               <option value="worker" ${u.role === 'worker' ? 'selected' : ''}>Worker</option>
-              ${isAdmin() ? `<option value="manager" ${u.role === 'manager' ? 'selected' : ''}>Manager</option>` : ''}
+              <option value="manager" ${u.role === 'manager' ? 'selected' : ''}>Manager</option>
             </select>
-            ${isManager() ? '<p class="empty">Managers can promote up to Worker only.</p>' : ''}
           </div>
+          ` : ''}
           <div id="customer-only-fields" class="${u.role === 'customer' ? '' : 'hidden'}">
             <div class="field"><label>Region / Area</label><input id="u-region" value="${esc(u.region || '')}" placeholder="e.g. Lougheed, Gastown"></div>
             <div class="field"><label>Address</label><input id="u-address" value="${esc(u.address || '')}"></div>
@@ -1301,8 +1302,8 @@ async function renderUserDetail() {
           </div>
           <button type="submit" class="btn btn-primary">Save User</button>
         </form>
-        <p class="empty" style="margin-top:8px">App signups are always customers. Promote to Worker or Manager here.</p>
-        <button type="button" class="btn btn-danger" id="delete-user" style="margin-top:12px">Delete User</button>
+        ${isAdmin() ? '<p class="empty" style="margin-top:8px">App signups are always customers. Promote to Worker or Manager here.</p>' : '<p class="empty" style="margin-top:8px">Managers can edit contact details. Role changes and deletion are admin-only.</p>'}
+        ${isAdmin() ? '<button type="button" class="btn btn-danger" id="delete-user" style="margin-top:12px">Delete User</button>' : ''}
         ` : isStaff() && u.role === 'manager' && isAdmin() ? `
         <form id="admin-user-form" style="margin-top:16px">
           <div class="field">

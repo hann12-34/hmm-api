@@ -790,37 +790,40 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), as
     }
   }
 
+  // A role that matches the current one is a no-op; drop it so it isn't
+  // treated as a change (and so managers editing contact info aren't blocked).
+  if (patch.role !== undefined && patch.role === user.role) {
+    delete patch.role;
+  }
   if (patch.role !== undefined) {
-    if (req.user.role === 'manager' && patch.role === 'manager') {
-      return res.status(403).json({ error: 'Only admins can assign the manager role' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: "Only admins can change a user's role" });
     }
     if (!['customer', 'worker', 'manager'].includes(patch.role)) {
       return res.status(400).json({ error: 'Role must be customer, worker, or manager' });
     }
-    if (patch.role !== user.role) {
-      const leavingCustomer = user.role === 'customer' && patch.role !== 'customer';
-      if (leavingCustomer) {
-        patch.subscriptionStatus = 'cancelled';
-        patch.renewalDate = null;
-        await WorkOrder.updateMany(
-          { customerUID: user.uid, status: { $in: ['pendingConfirmation', 'scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
-          { status: 'cancelled' }
-        );
-      } else if (patch.role === 'customer') {
-        const pricing = await getPricingConfig();
-        const locked = lockedPricesFromConfig(pricing);
-        if (user.lockedMonthlyPrice == null) {
-          Object.assign(patch, locked);
-        }
-        patch.subscriptionStatus = 'active';
-        patch.subscriptionPlan = user.subscriptionPlan || 'monthly';
-        const renewal = new Date();
-        renewal.setMonth(renewal.getMonth() + 1);
-        patch.renewalDate = renewal;
-        if (!user.signupFeePaid) {
-          patch.signupFeePaid = true;
-          patch.signupFeeAmount = pricing.signupFee;
-        }
+    const leavingCustomer = user.role === 'customer' && patch.role !== 'customer';
+    if (leavingCustomer) {
+      patch.subscriptionStatus = 'cancelled';
+      patch.renewalDate = null;
+      await WorkOrder.updateMany(
+        { customerUID: user.uid, status: { $in: ['pendingConfirmation', 'scheduled', 'inProgress', 'paused', 'needsRevisit'] } },
+        { status: 'cancelled' }
+      );
+    } else if (patch.role === 'customer') {
+      const pricing = await getPricingConfig();
+      const locked = lockedPricesFromConfig(pricing);
+      if (user.lockedMonthlyPrice == null) {
+        Object.assign(patch, locked);
+      }
+      patch.subscriptionStatus = 'active';
+      patch.subscriptionPlan = user.subscriptionPlan || 'monthly';
+      const renewal = new Date();
+      renewal.setMonth(renewal.getMonth() + 1);
+      patch.renewalDate = renewal;
+      if (!user.signupFeePaid) {
+        patch.signupFeePaid = true;
+        patch.signupFeeAmount = pricing.signupFee;
       }
     }
   }
@@ -854,7 +857,7 @@ app.patch('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), as
   res.json(updated.toPublic());
 });
 
-app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manager', 'worker'), async (req, res) => {
+app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manager', 'worker', 'customer'), async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword || newPassword.length < 6) {
     return res.status(400).json({ error: 'Current password and new password (6+ chars) required' });
@@ -877,7 +880,7 @@ app.patch('/api/users/me/password', authMiddleware, requireRole('admin', 'manage
   res.json({ ok: true, token: signToken(user) });
 });
 
-app.delete('/api/users/:uid', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+app.delete('/api/users/:uid', authMiddleware, requireRole('admin'), async (req, res) => {
   const target = await User.findOne({ uid: req.params.uid });
   if (!target) return res.status(404).json({ error: 'Not found' });
   if (target.role === 'admin') {
@@ -954,7 +957,7 @@ app.get('/api/admin/pricing', authMiddleware, requireRole('admin', 'manager'), a
   });
 });
 
-app.patch('/api/admin/pricing', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+app.patch('/api/admin/pricing', authMiddleware, requireRole('admin'), async (req, res) => {
   const updated = await updatePricingConfig(req.body);
   await logAudit({
     actor: req.user,
@@ -1066,7 +1069,7 @@ app.post('/api/notifications/read-all', authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/orders/:id', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+app.delete('/api/orders/:id', authMiddleware, requireRole('admin'), async (req, res) => {
   const order = await WorkOrder.findById(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   await WorkOrder.findByIdAndDelete(req.params.id);
